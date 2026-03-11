@@ -48,7 +48,7 @@ serde_with = { version = "3.9.0", features = ["macros", "json"] }
 
 # tracing
 tracing = "0.1"
-tracing-subscriber = "0.3.18"
+tracing-subscriber = "0.3.22"
 
 # misc
 alloy-primitives = "0.8"
