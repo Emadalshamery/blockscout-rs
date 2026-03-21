@@ -26,7 +26,7 @@ anyhow = { version = "1.0" }
 async-trait = { version = "0.1" }
 blockscout-display-bytes = "1.1.0"
 blockscout-service-launcher = "0.17.0"
-bytes = { version = "1.2" }
+bytes = { version = "1.11" }
 chrono = { version = "0.4" }
 cron = { version = "0.11" }
 era-compiler-common = { git = "https://github.com/matter-labs/era-compiler-common", rev = "9969de1" }
