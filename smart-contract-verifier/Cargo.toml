@@ -26,7 +26,7 @@ anyhow = { version = "1.0" }
 async-trait = { version = "0.1" }
 blockscout-display-bytes = "1.1.0"
 blockscout-service-launcher = "0.17.0"
-bytes = { version = "1.2" }
+bytes = { version = "1.11" }
 chrono = { version = "0.4" }
 cron = { version = "0.11" }
 era-compiler-common = { git = "https://github.com/matter-labs/era-compiler-common", rev = "9969de1" }
@@ -49,7 +49,7 @@ prometheus = { version = "0.13" }
 prost = { version = "0.13" }
 prost-build = { version = "0.13" }
 quick-xml = { version = "0.24" }
-rand = { version = "0.8" }
+rand = { version = "0.9" }
 readonly = { version = "0.2" }
 reqwest = { version = "0.11" }
 reqwest-middleware = { version = "0.1" }
