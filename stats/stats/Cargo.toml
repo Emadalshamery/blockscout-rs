@@ -24,7 +24,7 @@ futures = "0.3"
 migration = { path = "./migration" }
 stats-proto = { path = "../stats-proto" }
 url = "2.3"
-rand = "0.8"
+rand = "0.10"
 lazy_static = "1.4"
 prometheus = "0.13"
 anyhow = "1"
