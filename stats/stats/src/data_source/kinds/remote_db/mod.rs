@@ -16,6 +16,7 @@
 //! [types in `local_db`](`crate::data_source::kinds::local_db`) is largely
 //! helpful.
 
+pub mod db_choice;
 pub mod query;
 
 use std::{
@@ -28,9 +29,9 @@ use chrono::{DateTime, Utc};
 use sea_orm::{DatabaseConnection, DbErr};
 
 use crate::{
+    ChartError, ChartKey,
     data_source::{source::DataSource, types::UpdateContext},
     range::UniversalRange,
-    ChartError, ChartKey,
 };
 
 pub use query::{

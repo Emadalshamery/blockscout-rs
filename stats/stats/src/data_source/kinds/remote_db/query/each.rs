@@ -8,20 +8,20 @@ use chrono::{DateTime, Utc};
 use sea_orm::{FromQueryResult, Statement, TryGetable};
 
 use crate::{
+    ChartError,
     charts::db_interaction::read::find_one_value,
     data_source::{
-        kinds::remote_db::RemoteQueryBehaviour,
-        types::{BlockscoutMigrations, UpdateContext},
+        kinds::remote_db::{RemoteQueryBehaviour, db_choice::DatabaseChoice},
+        types::{IndexerMigrations, UpdateContext},
     },
-    range::{exclusive_range_to_inclusive, UniversalRange},
+    range::{UniversalRange, exclusive_range_to_inclusive},
     types::{Timespan, TimespanValue},
-    ChartError,
 };
 
-pub trait StatementFromTimespan {
+pub trait StatementFromTimespan: DatabaseChoice {
     fn get_statement(
         point: Range<DateTime<Utc>>,
-        completed_migrations: &BlockscoutMigrations,
+        completed_migrations: &IndexerMigrations,
     ) -> Statement;
 }
 
@@ -62,9 +62,9 @@ where
         let points = split_time_range_into_resolution_points::<Resolution>(query_range);
         let mut collected_data = Vec::with_capacity(points.len());
         for point_range in points {
-            let statement =
-                S::get_statement(point_range.clone(), &cx.blockscout_applied_migrations);
-            let point_value = find_one_value::<ValueWrapper<Value>>(cx, statement).await?;
+            let statement = S::get_statement(point_range.clone(), &cx.indexer_applied_migrations);
+            let point_value =
+                find_one_value::<_, ValueWrapper<Value>>(S::get_db(cx)?, statement).await?;
             if let Some(ValueWrapper { value }) = point_value {
                 let timespan = resolution_from_range(point_range);
                 collected_data.push(TimespanValue { timespan, value });

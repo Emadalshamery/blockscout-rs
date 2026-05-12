@@ -3,26 +3,15 @@
 //! update of other lighter charts to perform simultaneously
 //! and reuse the heavy query data.
 
-use crate::{construct_update_group, counters::*, lines::*};
-
-macro_rules! singleton_groups {
-    ($($chart: ident),+ $(,)?) => {
-        $(
-            ::paste::paste!(
-                construct_update_group!([< $chart Group >] {
-                    charts: [$chart]
-                });
-            );
-        )+
-    };
-}
+use crate::{construct_update_group, counters::*, lines::*, utils::singleton_groups};
 
 // Mostly counters because they don't have resolutions
 // Group for chart `Name` is called `NameGroup`
 singleton_groups!(
-    // Active accounts is left without resolutions because the chart is non-trivial
-    // to calculate somewhat-optimally
+    // Only weekly resolution because it is non-trivial
+    // to calculate somewhat-optimally for larger spans.
     ActiveAccounts,
+    ActiveAccountsWeekly,
     // Same ^ for bundlers, paymasters, and aa wallets
     ActiveBundlers,
     ActivePaymasters,
@@ -333,6 +322,24 @@ construct_update_group!(NewBuilderAccountsGroup {
         BuilderAccountsGrowthWeekly,
         BuilderAccountsGrowthMonthly,
         BuilderAccountsGrowthYearly,
+        TotalBuilderAccounts,
+    ],
+});
+
+construct_update_group!(ZetachainCrossChainTxnsGroup {
+    charts: [
+        NewZetachainCrossChainTxns,
+        NewZetachainCrossChainTxnsWeekly,
+        NewZetachainCrossChainTxnsMonthly,
+        NewZetachainCrossChainTxnsYearly,
+        ZetachainCrossChainTxnsGrowth,
+        ZetachainCrossChainTxnsGrowthWeekly,
+        ZetachainCrossChainTxnsGrowthMonthly,
+        ZetachainCrossChainTxnsGrowthYearly,
+        // Zetachain cctx charts returned in transactions page.
+        NewZetachainCrossChainTxns24h,
+        PendingZetachainCrossChainTxns,
+        TotalZetachainCrossChainTxns,
     ],
 });
 

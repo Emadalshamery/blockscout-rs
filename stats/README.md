@@ -65,35 +65,47 @@ Some variables are hidden in a disclosure widget below the table.
 
 [anchor]: <> (anchors.envs.start.service)
 
-| Variable | Req&#x200B;uir&#x200B;ed | Description | Default value |
-| --- | --- | --- | --- |
-| `STATS__DB_URL` | | Postgres URL to stats db | `""` |
-| `STATS__BLOCKSCOUT_DB_URL` | | Postgres URL to blockscout db | `""` |
-| `STATS__CREATE_DATABASE` | | Create database on start | `false` |
-| `STATS__RUN_MIGRATIONS` | | Run migrations on start | `false` |
-| `STATS__CHARTS_CONFIG` | | Path to config file for charts | `"config/charts.json"` |
-| `STATS__LAYOUT_CONFIG` | | Path to config file for chart layout | `"config/layout.json"` |
-| `STATS__UPDATE_GROUPS_CONFIG` | | Path to config file for update groups | `"config/update_groups.json"` |
-| `STATS__SWAGGER_FILE` | | Path of the swagger file to serve in the swagger endpoint | `"../stats-proto/swagger/stats.swagger.yaml"` |
-| `STATS__FORCE_UPDATE_ON_START` | | Fully recalculate all charts on start | `false` |
-| `STATS__CONCURRENT_START_UPDATES` | | Amount of concurrent charts update on start | `3` |
-| `STATS__DEFAULT_SCHEDULE` | | Schedule used for update groups with no config | `"0 0 1 * * * *"` |
-| `STATS__LIMITS__REQUESTED_POINTS_LIMIT` | | Maximum allowed number of requested points | `182500` |
-| `STATS__BLOCKSCOUT_API_URL` | see descri​ption | URL to Blockscout API. Used for [conditional update start](#conditional-start). Required unless `STATS__IGNORE_BLOCKSCOUT_API_ABSENCE`  is set to `true`. | `null` |
-| `STATS__CONDITIONAL_START__CHECK_PERIOD_SECS` | | Base time between start condition checking | `5` |
-| `STATS__CONDITIONAL_START__BLOCKS_RATIO__ENABLED` | | Enable `blocks_ratio` threshold | `true` |
-| `STATS__CONDITIONAL_START__BLOCKS_RATIO__THRESHOLD` | | Value for `blocks_ratio` threshold | `0.98` |
-| `STATS__CONDITIONAL_START__INTERNAL_TRANSACTIONS_RATIO__ENABLED` | | Enable `internal_transactions_ratio` threshold | `true` |
-| `STATS__CONDITIONAL_START__INTERNAL_TRANSACTIONS_RATIO__THRESHOLD` | | Value for `internal_transactions_ratio` threshold | `0.98` |
-| `STATS__CONDITIONAL_START__USER_OPS_PAST_INDEXING_FINISHED__ENABLED` | | Enable checking user ops indexing status | `true` |
-| `STATS__IGNORE_BLOCKSCOUT_API_ABSENCE` | | Disable requirement for blockscout api url setting. Turns off corresponding features if the api setting is not set | `false` |
-| `STATS__DISABLE_INTERNAL_TRANSACTIONS` | | Disable functionality that utilizes internal transactions. In particular, disable internal transactions ratio check for starting the service and related charts (`newContracts`, `lastNewContracts`, and `contractsGrowth`). It has a higher priority than config files and respective envs. | `false` |
-| `STATS__ENABLE_ALL_ARBITRUM` | | Enable Arbitrum-specific charts. Variable for convenience only, the same charts can be enabled one-by-one. | `false` |
-| `STATS__ENABLE_ALL_OP_STACK` | | Enable OP-Stack-specific charts. Variable for convenience only, the same charts can be enabled one-by-one. | `false` |
-| `STATS__ENABLE_ALL_EIP_7702` | | Enable EIP-7702-specific charts. Variable for convenience only, the same charts can be enabled one-by-one. | `false` |
-| `STATS__API_KEYS__<KEY_NAME>` | | E.g. `very_secure_key_value`. Allows access to key-protected functinoality | `null` |
+| Variable                                                             | Req&#x200B;uir&#x200B;ed | Description                                                                                                                                                                                                                                                                                  | Default value                                   |
+| -------------------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `STATS__DB_URL`                                                      |                          | Postgres URL to stats db                                                                                                                                                                                                                                                                     | ``                                              |
+| `STATS__MODE`                                                        |                          | Service mode: `blockscout`, `multichain_aggregator`, `zetachain`, or `interchain`. Modes are mutually exclusive. `blockscout` implies no zetachain CCTX and no multichain behavior.                                                                                                          | `blockscout`                                    |
+| `STATS__MULTICHAIN_FILTER`                                           |                          | An array of chain IDs used to filter input data in `multichain_aggregator` mode. Specified as a comma-separated list of identifiers without spaces (e.g. `10,130`)                                                                                                                           | `null`                                          |
+| `STATS__INTERCHAIN_PRIMARY_ID`                                       |                          | If the primary chain is set, send/receive counters and charts will be built around it (interchain mode only)                                                                                                                                                                                 | `null`                                          |
+| `STATS__INDEXER_DB_URL`                                              |                          | Postgres URL to indexer db; renamed from `*_BLOCKSCOUT_DB_URL`                                                                                                                                                                                                                               | `null`                                          |
+| `STATS__BLOCKSCOUT_DB_URL`                                           |                          | Postgres URL to blockscout db. Renamed to `*_INDEXER_DB_URL` but left for backwards-compatibility                                                                                                                                                                                            | `null`                                          |
+| `STATS__SECOND_INDEXER_DB_URL`                                       |                          | Postgres URL to second indexer db; i.e. zetachain cctx indexer db. Required if `STATS__MODE=zetachain`                                                                                                                                                                                       | `null`                                          |
+| `STATS__LINKED_STATS__BASE_URL`                                      |                          | Base URL of an optional linked secondary stats service used to fill gaps in read responses.                                                                                                                                                                                                  | `null`                                          |
+| `STATS__LINKED_STATS__TIMEOUT`                                       |                          | Timeout for linked secondary requests, in milliseconds                                                                                                                                                                                                                                       | `3000`                                          |
+| `STATS__LINKED_STATS__MAX_HOPS`                                      |                          | Remaining hop budget propagated to linked secondary stats services. Missing incoming hop header starts with this value. Values above the hard cap of `4` are truncated.                                                                                                                      | `1`                                             |
+| `STATS__CREATE_DATABASE`                                             |                          | Create database on start                                                                                                                                                                                                                                                                     | `false`                                         |
+| `STATS__RUN_MIGRATIONS`                                              |                          | Run migrations on start                                                                                                                                                                                                                                                                      | `false`                                         |
+| `STATS__CHARTS_CONFIG`                                               |                          | Path to config file for charts                                                                                                                                                                                                                                                               | `config/blockscout_instance/charts.json`        |
+| `STATS__LAYOUT_CONFIG`                                               |                          | Path to config file for chart layout                                                                                                                                                                                                                                                         | `config/blockscout_instance/layout.json`        |
+| `STATS__UPDATE_GROUPS_CONFIG`                                        |                          | Path to config file for update groups                                                                                                                                                                                                                                                        | `config/blockscout_instance/update_groups.json` |
+| `STATS__FORCE_UPDATE_ON_START`                                       |                          | Fully recalculate all charts on start                                                                                                                                                                                                                                                        | `false`                                         |
+| `STATS__CONCURRENT_START_UPDATES`                                    |                          | Amount of concurrent charts update on start                                                                                                                                                                                                                                                  | `3`                                             |
+| `STATS__DEFAULT_SCHEDULE`                                            |                          | Schedule used for update groups with no config                                                                                                                                                                                                                                               | `0 0 1 * * * *`                                 |
+| `STATS__LIMITS__REQUESTED_POINTS_LIMIT`                              |                          | Maximum allowed number of requested points                                                                                                                                                                                                                                                   | `182500`                                        |
+| `STATS__BLOCKSCOUT_API_URL`                                          |                          | URL to Blockscout API. Used for [conditional update start](#conditional-start). Required unless `STATS__IGNORE_BLOCKSCOUT_API_ABSENCE`  is set to `true`.                                                                                                                                    | `null`                                          |
+| `STATS__CONDITIONAL_START__CHECK_PERIOD_SECS`                        |                          | Base time between start condition checking                                                                                                                                                                                                                                                   | `5`                                             |
+| `STATS__CONDITIONAL_START__BLOCKS_RATIO__ENABLED`                    |                          | Enable `blocks_ratio` threshold                                                                                                                                                                                                                                                              | `true`                                          |
+| `STATS__CONDITIONAL_START__BLOCKS_RATIO__THRESHOLD`                  |                          | Value for `blocks_ratio` threshold                                                                                                                                                                                                                                                           | `0.98`                                          |
+| `STATS__CONDITIONAL_START__INTERNAL_TRANSACTIONS_RATIO__ENABLED`     |                          | Enable `internal_transactions_ratio` threshold                                                                                                                                                                                                                                               | `true`                                          |
+| `STATS__CONDITIONAL_START__INTERNAL_TRANSACTIONS_RATIO__THRESHOLD`   |                          | Value for `internal_transactions_ratio` threshold                                                                                                                                                                                                                                            | `0.98`                                          |
+| `STATS__CONDITIONAL_START__USER_OPS_PAST_INDEXING_FINISHED__ENABLED` |                          | Enable checking user ops indexing status                                                                                                                                                                                                                                                     | `true`                                          |
+| `STATS__CONDITIONAL_START__ZETACHAIN_INDEXED_UNTIL_TODAY__ENABLED`   |                          | Enable checking zetachain indexing stats, e.g. `false`. If not set, value is the same as `STATS__MODE=zetachain`                                                                                                                                                                             | `null`                                          |
+| `STATS__IGNORE_BLOCKSCOUT_API_ABSENCE`                               |                          | Disable requirement for blockscout api url setting. Turns off corresponding features if the api setting is not set                                                                                                                                                                           | `false`                                         |
+| `STATS__DISABLE_INTERNAL_TRANSACTIONS`                               |                          | Disable functionality that utilizes internal transactions. In particular, disable internal transactions ratio check for starting the service and related charts (`newContracts`, `lastNewContracts`, and `contractsGrowth`). It has a higher priority than config files and respective envs. | `false`                                         |
+| `STATS__ENABLE_ALL_ARBITRUM`                                         |                          | Enable Arbitrum-specific charts. Variable for convenience only, the same charts can be enabled one-by-one.                                                                                                                                                                                   | `false`                                         |
+| `STATS__ENABLE_ALL_OP_STACK`                                         |                          | Enable OP-Stack-specific charts. Variable for convenience only, the same charts can be enabled one-by-one.                                                                                                                                                                                   | `false`                                         |
+| `STATS__ENABLE_ALL_EIP_7702`                                         |                          | Enable EIP-7702-specific charts. Variable for convenience only, the same charts can be enabled one-by-one.                                                                                                                                                                                   | `false`                                         |
+| `STATS__API_KEYS__<KEY_NAME>`                                        |                          | E.g. `very_secure_key_value`. Allows access to key-protected functinoality                                                                                                                                                                                                                   | `null`                                          |
 
 [anchor]: <> (anchors.envs.end.service)
+
+##### Chaining services
+
+When `linked_stats` is configured, the intended topology is one primary stats service with at most one linked secondary service. Chaining is technically possible because a secondary service can also be configured with its own `linked_stats`, but this should be avoided unless there is a clear operational reason: it increases latency and complexity, and careless configuration can still create cycles.
 
 ##### Conditional start
 In order to prevent incorrect statistics from being collected, there is an option to automatically delay chart update. This is controlled by `STATS_CONDITIONAL_START_*` environmental variables. 
@@ -105,21 +117,21 @@ The service will periodically check the enabled start conditions and start updat
 
 [anchor]: <> (anchors.envs.start.server)
 
-| Variable | Req&#x200B;uir&#x200B;ed | Description | Default value |
-| --- | --- | --- | --- |
-| `STATS__SERVER__GRPC__ADDR` | | Address for the gRPC server to listen on | `"0.0.0.0:8051"` |
-| `STATS__SERVER__GRPC__ENABLED` | | Enable the gRPC server | `false` |
-| `STATS__SERVER__HTTP__ADDR` | | Address for the HTTP server to listen on | `"0.0.0.0:8050"` |
-| `STATS__SERVER__HTTP__CORS__ALLOWED_CREDENTIALS` | | Allow credentials in CORS requests | `true` |
-| `STATS__SERVER__HTTP__CORS__ALLOWED_METHODS` | | List of allowed HTTP methods for CORS | `"PUT, GET, POST, OPTIONS, DELETE, PATCH"` |
-| `STATS__SERVER__HTTP__CORS__ALLOWED_ORIGIN` | | Allowed origin for CORS requests | `""` |
-| `STATS__SERVER__HTTP__CORS__BLOCK_ON_ORIGIN_MISMATCH` | | Block requests if origin does not match | `false` |
-| `STATS__SERVER__HTTP__CORS__ENABLED` | | Enable CORS | `false` |
-| `STATS__SERVER__HTTP__CORS__MAX_AGE` | | Max age for CORS preflight request caching (in seconds) | `3600` |
-| `STATS__SERVER__HTTP__CORS__SEND_WILDCARD` | | Send wildcard for allowed origins in CORS | `false` |
-| `STATS__SERVER__HTTP__ENABLED` | | Enable the HTTP server | `true` |
-| `STATS__SERVER__HTTP__MAX_BODY_SIZE` | | Maximum allowed size for HTTP request bodies (in bytes) | `2097152` |
-| `STATS__SERVER__HTTP__BASE_PATH` | | Path prefix to use before all services' endpoints. E.g. "/abcd" will make the service endpoints start with `/abcd/api/v1/...` instead of `/api/v1/...` | `null` |
+| Variable                                              | Req&#x200B;uir&#x200B;ed | Description                                                                                                                                            | Default value                            |
+| ----------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- |
+| `STATS__SERVER__GRPC__ADDR`                           |                          | Address for the gRPC server to listen on                                                                                                               | `0.0.0.0:8051`                           |
+| `STATS__SERVER__GRPC__ENABLED`                        |                          | Enable the gRPC server                                                                                                                                 | `false`                                  |
+| `STATS__SERVER__HTTP__ADDR`                           |                          | Address for the HTTP server to listen on                                                                                                               | `0.0.0.0:8050`                           |
+| `STATS__SERVER__HTTP__CORS__ALLOWED_CREDENTIALS`      |                          | Allow credentials in CORS requests                                                                                                                     | `true`                                   |
+| `STATS__SERVER__HTTP__CORS__ALLOWED_METHODS`          |                          | List of allowed HTTP methods for CORS                                                                                                                  | `PUT, GET, POST, OPTIONS, DELETE, PATCH` |
+| `STATS__SERVER__HTTP__CORS__ALLOWED_ORIGIN`           |                          | Allowed origin for CORS requests                                                                                                                       | ``                                       |
+| `STATS__SERVER__HTTP__CORS__BLOCK_ON_ORIGIN_MISMATCH` |                          | Block requests if origin does not match                                                                                                                | `false`                                  |
+| `STATS__SERVER__HTTP__CORS__ENABLED`                  |                          | Enable CORS                                                                                                                                            | `false`                                  |
+| `STATS__SERVER__HTTP__CORS__MAX_AGE`                  |                          | Max age for CORS preflight request caching (in seconds)                                                                                                | `3600`                                   |
+| `STATS__SERVER__HTTP__CORS__SEND_WILDCARD`            |                          | Send wildcard for allowed origins in CORS                                                                                                              | `false`                                  |
+| `STATS__SERVER__HTTP__ENABLED`                        |                          | Enable the HTTP server                                                                                                                                 | `true`                                   |
+| `STATS__SERVER__HTTP__MAX_BODY_SIZE`                  |                          | Maximum allowed size for HTTP request bodies (in bytes)                                                                                                | `2097152`                                |
+| `STATS__SERVER__HTTP__BASE_PATH`                      |                          | Path prefix to use before all services' endpoints. E.g. "/abcd" will make the service endpoints start with `/abcd/api/v1/...` instead of `/api/v1/...` | `null`                                   |
 
 [anchor]: <> (anchors.envs.end.server)
 
@@ -131,12 +143,12 @@ The service will periodically check the enabled start conditions and start updat
 
 [anchor]: <> (anchors.envs.start.tracing)
 
-| Variable | Req&#x200B;uir&#x200B;ed | Description | Default value |
-| --- | --- | --- | --- |
-| `STATS__JAEGER__AGENT_ENDPOINT` | | Jaeger agent endpoint for tracing | `"127.0.0.1:6831"` |
-| `STATS__JAEGER__ENABLED` | | Enable Jaeger tracing | `false` |
-| `STATS__TRACING__ENABLED` | | Enable tracing | `true` |
-| `STATS__TRACING__FORMAT` | | Tracing format to use, either 'default' or 'json' | `"default"` |
+| Variable                        | Req&#x200B;uir&#x200B;ed | Description                                       | Default value    |
+| ------------------------------- | ------------------------ | ------------------------------------------------- | ---------------- |
+| `STATS__JAEGER__AGENT_ENDPOINT` |                          | Jaeger agent endpoint for tracing                 | `127.0.0.1:6831` |
+| `STATS__JAEGER__ENABLED`        |                          | Enable Jaeger tracing                             | `false`          |
+| `STATS__TRACING__ENABLED`       |                          | Enable tracing                                    | `true`           |
+| `STATS__TRACING__FORMAT`        |                          | Tracing format to use, either 'default' or 'json' | `default`        |
 
 [anchor]: <> (anchors.envs.end.tracing)
 
@@ -148,11 +160,11 @@ The service will periodically check the enabled start conditions and start updat
 
 [anchor]: <> (anchors.envs.start.metrics)
 
-| Variable | Req&#x200B;uir&#x200B;ed | Description | Default value |
-| --- | --- | --- | --- |
-| `STATS__METRICS__ADDR` | | Address for the metrics server to listen on | `"0.0.0.0:6060"` |
-| `STATS__METRICS__ENABLED` | | Enable the metrics server | `false` |
-| `STATS__METRICS__ROUTE` | | Route for exposing metrics | `"/metrics"` |
+| Variable                  | Req&#x200B;uir&#x200B;ed | Description                                 | Default value  |
+| ------------------------- | ------------------------ | ------------------------------------------- | -------------- |
+| `STATS__METRICS__ADDR`    |                          | Address for the metrics server to listen on | `0.0.0.0:6060` |
+| `STATS__METRICS__ENABLED` |                          | Enable the metrics server                   | `false`        |
+| `STATS__METRICS__ROUTE`   |                          | Route for exposing metrics                  | `/metrics`     |
 
 [anchor]: <> (anchors.envs.end.metrics)
 
@@ -163,21 +175,21 @@ The service will periodically check the enabled start conditions and start updat
 
 [anchor]: <> (anchors.envs.start.charts)
 
-| Variable | Req&#x200B;uir&#x200B;ed | Description | Default value |
-| --- | --- | --- | --- |
-| `STATS_CHARTS__COUNTERS__<COUNTER_NAME>__DESCRIPTION` | | Counter `<COUNTER_NAME>` description, e.g. `"Some description"` | `null` |
-| `STATS_CHARTS__COUNTERS__<COUNTER_NAME>__ENABLED` | | Enable counter `<COUNTER_NAME>`, e.g. `true` | `null` |
-| `STATS_CHARTS__COUNTERS__<COUNTER_NAME>__TITLE` | | Displayed name of `<COUNTER_NAME>`, e.g. `"Some title with {{<variable_name>}}"` | `null` |
-| `STATS_CHARTS__COUNTERS__<COUNTER_NAME>__UNITS` | | Measurement units for the counter, e.g. `"Bytes"` | `null` |
-| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__DESCRIPTION` | | Line chart `<LINE_CHART_NAME>` description, e.g. `"Some description with {{<variable_name>}}"` | `null` |
-| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__ENABLED` | | Enable `<LINE_CHART_NAME>`, e.g. `true` | `null` |
-| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__RESOLUTIONS__DAY` | | Enable daily data for the chart, e.g. `true` | `true` if the resolution is defined |
-| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__RESOLUTIONS__WEEK` | | Enable weekly data | `true` if defined |
-| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__RESOLUTIONS__MONTH` | | Enable monthly data | `true` if defined |
-| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__RESOLUTIONS__YEAR` | | Enable yearly data | `true` if defined |
-| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__TITLE` | | Displayed name of `<LINE_CHART_NAME>`, e.g. `"Some line chart title"` | `null` |
-| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__UNITS` | | Measurement units, e.g. `"{{<variable_name>}}"` | `null` |
-| `STATS_CHARTS__TEMPLATE_VALUES__<VARIABLE_NAME>` | | Value to substitute instead of `{{<variable_name>}}`, e.g. `STATS_CHARTS__TEMPLATE_VALUES__NATIVE_COIN_SYMBOL="some_value"`. See full list of variables in charts config file (`charts.json`). | `null` |
+| Variable                                                           | Req&#x200B;uir&#x200B;ed | Description                                                                                                                                                                                    | Default value |
+| ------------------------------------------------------------------ | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `STATS_CHARTS__COUNTERS__<COUNTER_NAME>__DESCRIPTION`              |                          | Counter `<COUNTER_NAME>` description, e.g. `"Some description"`                                                                                                                                | `null`        |
+| `STATS_CHARTS__COUNTERS__<COUNTER_NAME>__ENABLED`                  |                          | Enable counter `<COUNTER_NAME>`, e.g. `true`                                                                                                                                                   | `null`        |
+| `STATS_CHARTS__COUNTERS__<COUNTER_NAME>__TITLE`                    |                          | Displayed name of `<COUNTER_NAME>`, e.g. `"Some title with {{<variable_name>}}"`                                                                                                               | `null`        |
+| `STATS_CHARTS__COUNTERS__<COUNTER_NAME>__UNITS`                    |                          | Measurement units for the counter, e.g. `"Bytes"`                                                                                                                                              | `null`        |
+| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__DESCRIPTION`        |                          | Line chart `<LINE_CHART_NAME>` description, e.g. `"Some description with {{<variable_name>}}"`                                                                                                 | `null`        |
+| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__ENABLED`            |                          | Enable `<LINE_CHART_NAME>`, e.g. `true`                                                                                                                                                        | `null`        |
+| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__RESOLUTIONS__DAY`   |                          | Enable daily data for the chart, e.g. `true`                                                                                                                                                   | `null`        |
+| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__RESOLUTIONS__WEEK`  |                          | Enable weekly data                                                                                                                                                                             | `null`        |
+| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__RESOLUTIONS__MONTH` |                          | Enable monthly data                                                                                                                                                                            | `null`        |
+| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__RESOLUTIONS__YEAR`  |                          | Enable yearly data                                                                                                                                                                             | `null`        |
+| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__TITLE`              |                          | Displayed name of `<LINE_CHART_NAME>`, e.g. `"Some line chart title"`                                                                                                                          | `null`        |
+| `STATS_CHARTS__LINE_CHARTS__<LINE_CHART_NAME>__UNITS`              |                          | Measurement units, e.g. `"{{<variable_name>}}"`                                                                                                                                                | `null`        |
+| `STATS_CHARTS__TEMPLATE_VALUES__<VARIABLE_NAME>`                   |                          | Value to substitute instead of `{{<variable_name>}}`, e.g. `STATS_CHARTS__TEMPLATE_VALUES__NATIVE_COIN_SYMBOL="some_value"`. See full list of variables in charts config file (`charts.json`). | `null`        |
 
 [anchor]: <> (anchors.envs.end.charts)
 
@@ -185,12 +197,12 @@ The service will periodically check the enabled start conditions and start updat
 
 [anchor]: <> (anchors.envs.start.layout)
 
-| Variable | Req&#x200B;uir&#x200B;ed | Description | Default value |
-| --- | --- | --- | --- |
-| `STATS_LAYOUT__COUNTERS_ORDER__<COUNTER_NAME>` | | Override position of `<COUNTER_NAME>` in the layout; `0` will place it first and `N` will place it Nth in the layout | `null` |
-| `STATS_LAYOUT__LINE_CHART_CATEGORIES__<CATEGORY_NAME>__ORDER` | | Override position of `<CATEGORY_NAME>` in the layout | `null` |
-| `STATS_LAYOUT__LINE_CHART_CATEGORIES__<CATEGORY_NAME>__CHARTS_ORDER__<LINE_CHART_NAME>` | | Override position of `<LINE_CHART_NAME>` within its category | `null` |
-| `STATS_LAYOUT__LINE_CHART_CATEGORIES__<CATEGORY_NAME>__TITLE` | | Displayed name of the category, e.g. `"Accounts"` | `null` |
+| Variable                                                                                | Req&#x200B;uir&#x200B;ed | Description                                                                                                          | Default value |
+|-----------------------------------------------------------------------------------------|--------------------------|----------------------------------------------------------------------------------------------------------------------|---------------|
+| `STATS_LAYOUT__COUNTERS_ORDER__<COUNTER_NAME>`                                          |                          | Override position of `<COUNTER_NAME>` in the layout; `0` will place it first and `N` will place it Nth in the layout | `null`        |
+| `STATS_LAYOUT__LINE_CHART_CATEGORIES__<CATEGORY_NAME>__ORDER`                           |                          | Override position of `<CATEGORY_NAME>` in the layout                                                                 | `null`        |
+| `STATS_LAYOUT__LINE_CHART_CATEGORIES__<CATEGORY_NAME>__CHARTS_ORDER__<LINE_CHART_NAME>` |                          | Override position of `<LINE_CHART_NAME>` within its category                                                         | `null`        |
+| `STATS_LAYOUT__LINE_CHART_CATEGORIES__<CATEGORY_NAME>__TITLE`                           |                          | Displayed name of the category, e.g. `"Accounts"`                                                                    | `null`        |
 
 [anchor]: <> (anchors.envs.end.layout)
 
@@ -198,9 +210,10 @@ The service will periodically check the enabled start conditions and start updat
 
 [anchor]: <> (anchors.envs.start.groups)
 
-| Variable | Req&#x200B;uir&#x200B;ed | Description | Default value |
-| --- | --- | --- | --- |
-| `STATS_UPDATE_GROUPS__SCHEDULES__<UPDATE_GROUP_NAME>` | | Override update schedule of the group, e.g. `"0 0 */3 * * * *"` for update each 3 hours | `null` |
+| Variable                                              | Req&#x200B;uir&#x200B;ed | Description                                                                             | Default value |
+|-------------------------------------------------------|--------------------------|-----------------------------------------------------------------------------------------|---------------|
+| `STATS_UPDATE_GROUPS__SCHEDULES__<UPDATE_GROUP_NAME>` |                          | Override update schedule of the group, e.g. `"0 0 */3 * * * *"` for update each 3 hours | `null`        |
+
 
 [anchor]: <> (anchors.envs.end.groups)
 

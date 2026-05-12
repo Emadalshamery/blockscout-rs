@@ -1,23 +1,24 @@
 use std::marker::{PhantomData, Send};
 
-use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use sea_orm::{FromQueryResult, Statement, TryGetable};
 
 use crate::{
+    ChartError,
     charts::db_interaction::read::{cached::find_one_value_cached, find_one_value},
     data_source::{
-        kinds::remote_db::RemoteQueryBehaviour,
-        types::{BlockscoutMigrations, Cacheable, UpdateContext, WrappedValue},
+        kinds::remote_db::{RemoteQueryBehaviour, db_choice::DatabaseChoice},
+        types::{Cacheable, IndexerMigrations, UpdateContext, WrappedValue},
     },
-    range::{inclusive_range_to_exclusive, UniversalRange},
+    range::{UniversalRange, inclusive_range_to_exclusive},
     types::{Timespan, TimespanValue},
-    ChartError,
+    utils::interval_24h,
 };
 
 use super::StatementFromRange;
 
-pub trait StatementForOne {
-    fn get_statement(completed_migrations: &BlockscoutMigrations) -> Statement;
+pub trait StatementForOne: DatabaseChoice {
+    fn get_statement(completed_migrations: &IndexerMigrations) -> Statement;
 }
 
 /// Get a single record from remote (blockscout) DB using statement
@@ -42,27 +43,29 @@ where
         cx: &UpdateContext<'_>,
         _range: UniversalRange<DateTime<Utc>>,
     ) -> Result<Value, ChartError> {
-        let statement = S::get_statement(&cx.blockscout_applied_migrations);
-        let data = find_one_value::<Value>(cx, statement)
+        let statement = S::get_statement(&cx.indexer_applied_migrations);
+        let data = find_one_value::<_, Value>(S::get_db(cx)?, statement)
             .await?
             .ok_or_else(|| ChartError::Internal("query returned nothing".into()))?;
         Ok(data)
     }
 }
 
-pub trait StatementFromUpdateTime {
+pub trait StatementFromUpdateTime: DatabaseChoice {
     fn get_statement(
-        update_time: DateTime<Utc>,
-        completed_migrations: &BlockscoutMigrations,
-    ) -> Statement;
+        _update_time: DateTime<Utc>,
+        _completed_migrations: &IndexerMigrations,
+    ) -> Statement {
+        panic!("not implemented for this statement")
+    }
+
+    fn get_statement_with_context(cx: &UpdateContext<'_>) -> Statement {
+        Self::get_statement(cx.time, &cx.indexer_applied_migrations)
+    }
 }
 
 /// Just like `PullOne` but timespan is taken from update time
-pub struct PullOneNowValue<S, Resolution, Value>(PhantomData<(S, Resolution, Value)>)
-where
-    S: StatementFromUpdateTime,
-    Resolution: Timespan + Ord + Send,
-    Value: Send + TryGetable;
+pub struct PullOneNowValue<S, Resolution, Value>(PhantomData<(S, Resolution, Value)>);
 
 impl<S, Resolution, Value> RemoteQueryBehaviour for PullOneNowValue<S, Resolution, Value>
 where
@@ -76,9 +79,9 @@ where
         cx: &UpdateContext<'_>,
         _range: UniversalRange<DateTime<Utc>>,
     ) -> Result<TimespanValue<Resolution, Value>, ChartError> {
-        let statement = S::get_statement(cx.time, &cx.blockscout_applied_migrations);
+        let statement = S::get_statement_with_context(cx);
         let timespan = Resolution::from_date(cx.time.date_naive());
-        let value = find_one_value::<WrappedValue<Value>>(cx, statement)
+        let value = find_one_value::<_, WrappedValue<Value>>(S::get_db(cx)?, statement)
             .await?
             .ok_or_else(|| ChartError::Internal("query returned nothing".into()))?
             .value;
@@ -105,16 +108,11 @@ where
         _range: UniversalRange<DateTime<Utc>>,
     ) -> Result<TimespanValue<NaiveDate, Value>, ChartError> {
         let update_time = cx.time;
-        let range_24h = update_time
-            .checked_sub_signed(TimeDelta::hours(24))
-            .unwrap_or(DateTime::<Utc>::MIN_UTC)..=update_time;
-        let query = S::get_statement(
-            Some(inclusive_range_to_exclusive(range_24h)),
-            &cx.blockscout_applied_migrations,
-            &cx.enabled_update_charts_recursive,
-        );
+        let range_24h = interval_24h(update_time);
+        let query =
+            S::get_statement_with_context(cx, Some(inclusive_range_to_exclusive(range_24h)));
 
-        let value = find_one_value_cached(cx, query)
+        let value = find_one_value_cached(S::get_db(cx)?, &cx.cache, query)
             .await?
             .ok_or_else(|| ChartError::Internal("query returned nothing".into()))?;
 
@@ -137,24 +135,30 @@ mod test {
     use sea_orm::{DatabaseBackend, DbBackend, MockDatabase, Statement};
 
     use crate::{
+        ChartKey,
         data_source::{
-            kinds::remote_db::{RemoteQueryBehaviour, StatementFromRange},
-            types::{BlockscoutMigrations, WrappedValue},
             UpdateContext, UpdateParameters,
+            kinds::remote_db::{
+                RemoteQueryBehaviour, StatementFromRange,
+                db_choice::{DatabaseChoice, UsePrimaryDB},
+            },
+            types::{IndexerMigrations, WrappedValue},
         },
         range::UniversalRange,
         tests::point_construction::dt,
         types::TimespanValue,
-        ChartKey,
     };
 
     use super::PullOne24hCached;
 
     struct TestStatement;
+    impl DatabaseChoice for TestStatement {
+        type DB = UsePrimaryDB;
+    }
     impl StatementFromRange for TestStatement {
         fn get_statement(
             _range: Option<Range<DateTime<Utc>>>,
-            _completed_migrations: &BlockscoutMigrations,
+            _completed_migrations: &IndexerMigrations,
             _enabled_update_charts_recursive: &HashSet<ChartKey>,
         ) -> Statement {
             Statement::from_string(DbBackend::Postgres, "SELECT id as value FROM t;")
@@ -180,12 +184,9 @@ mod test {
             ])
             .into_connection();
         let time = dt("2023-01-01T00:00:00").and_utc();
-        let cx = UpdateContext::from_params_now_or_override(UpdateParameters::query_parameters(
-            &db,
-            &db,
-            BlockscoutMigrations::latest(),
-            Some(time),
-        ));
+        let cx = UpdateContext::from_params_now_or_override(
+            UpdateParameters::default_test_query_parameters(&db, &db, Some(time)),
+        );
         assert_eq!(
             TimespanValue {
                 timespan: time.date_naive(),

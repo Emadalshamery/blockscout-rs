@@ -1,12 +1,9 @@
 use crate::conversion::{
-    self, batch_resolve_from_inner, batch_resolve_from_logic, pagination_from_logic,
-    ConversionError,
+    self, batch_resolve_from_inner, batch_resolve_from_logic, from_resolved_domains_result,
+    map_convertion_error, map_protocol_error, map_subgraph_error, pagination_from_logic,
 };
 use async_trait::async_trait;
-use bens_logic::{
-    protocols::ProtocolError,
-    subgraph::{LookupOutput, SubgraphReadError, SubgraphReader},
-};
+use bens_logic::subgraph::SubgraphReader;
 use bens_proto::blockscout::bens::v1::{domains_extractor_server::DomainsExtractor, *};
 use std::sync::Arc;
 
@@ -34,8 +31,8 @@ impl DomainsExtractor for DomainsExtractorService {
             .subgraph_reader
             .get_domain(input)
             .await
-            .map_err(map_subgraph_error)?
-            .map(|d| conversion::detailed_domain_from_logic(d, chain_id))
+            .map_err(|e| map_subgraph_error(e, Some(self.subgraph_reader.pg_pool_write())))?
+            .map(|d| conversion::detailed_domain_from_logic(d, Some(chain_id)))
             .transpose()
             .map_err(map_convertion_error)?
             .ok_or_else(|| tonic::Status::not_found("domain not found"))?;
@@ -54,9 +51,9 @@ impl DomainsExtractor for DomainsExtractorService {
             .subgraph_reader
             .get_domain_history(input)
             .await
-            .map_err(map_subgraph_error)?
+            .map_err(|e| map_subgraph_error(e, Some(self.subgraph_reader.pg_pool())))?
             .into_iter()
-            .map(|e| conversion::event_from_logic(e, chain_id))
+            .map(|e| conversion::event_from_logic(e, Some(chain_id)))
             .collect::<Result<_, _>>()
             .map_err(map_convertion_error)?;
         let response = ListDomainEventsResponse { items };
@@ -76,8 +73,8 @@ impl DomainsExtractor for DomainsExtractorService {
             .subgraph_reader
             .lookup_domain_name(input)
             .await
-            .map_err(map_subgraph_error)?;
-        let domains = from_resolved_domains_result(result.items, chain_id)?;
+            .map_err(|e| map_subgraph_error(e, Some(self.subgraph_reader.pg_pool_write())))?;
+        let domains = from_resolved_domains_result(result.items, Some(chain_id))?;
         let response = LookupDomainNameResponse {
             items: domains,
             next_page_params: pagination_from_logic(result.next_page_token, page_size),
@@ -97,8 +94,8 @@ impl DomainsExtractor for DomainsExtractorService {
             .subgraph_reader
             .lookup_address(input)
             .await
-            .map_err(map_subgraph_error)?;
-        let items = from_resolved_domains_result(result.items, chain_id)?;
+            .map_err(|e| map_subgraph_error(e, Some(self.subgraph_reader.pg_pool())))?;
+        let items = from_resolved_domains_result(result.items, Some(chain_id))?;
         let response = LookupAddressResponse {
             items,
             next_page_params: pagination_from_logic(result.next_page_token, page_size),
@@ -118,16 +115,17 @@ impl DomainsExtractor for DomainsExtractorService {
             .subgraph_reader
             .get_address(input.clone())
             .await
-            .map_err(map_subgraph_error)?
-            .map(|d| conversion::detailed_domain_from_logic(d, chain_id))
+            .map_err(|e| map_subgraph_error(e, Some(self.subgraph_reader.pg_pool_write())))?
+            .map(|d| conversion::detailed_domain_from_logic(d, Some(chain_id)))
             .transpose()
             .map_err(map_convertion_error)?;
 
         let resolved_domains_count = self
             .subgraph_reader
-            .count_domains_by_address(chain_id, input.address, true, false)
+            .count_domains_by_address(input.address, true, false, Some(chain_id), input.protocols)
             .await
-            .map_err(map_subgraph_error)? as i32;
+            .map_err(|e| map_subgraph_error(e, Some(self.subgraph_reader.pg_pool())))?
+            as i32;
         Ok(tonic::Response::new(GetAddressResponse {
             domain,
             resolved_domains_count,
@@ -145,8 +143,9 @@ impl DomainsExtractor for DomainsExtractorService {
             .subgraph_reader
             .batch_resolve_address_names(input)
             .await
-            .map_err(map_subgraph_error)?;
-        let response = batch_resolve_from_logic(names, chain_id).map_err(map_convertion_error)?;
+            .map_err(|e| map_subgraph_error(e, Some(self.subgraph_reader.pg_pool())))?;
+        let response =
+            batch_resolve_from_logic(names, Some(chain_id)).map_err(map_convertion_error)?;
         Ok(tonic::Response::new(response))
     }
 
@@ -173,44 +172,4 @@ impl DomainsExtractor for DomainsExtractorService {
         };
         Ok(tonic::Response::new(response))
     }
-}
-
-fn map_subgraph_error(err: SubgraphReadError) -> tonic::Status {
-    match err {
-        SubgraphReadError::Protocol(err) => map_protocol_error(err),
-        SubgraphReadError::DbErr(_) | SubgraphReadError::Internal(_) => {
-            tracing::error!(err =? err, "error during request handle");
-            tonic::Status::internal("internal error")
-        }
-    }
-}
-
-fn map_protocol_error(err: ProtocolError) -> tonic::Status {
-    match err {
-        ProtocolError::InvalidName { .. } => tonic::Status::invalid_argument(err.to_string()),
-        ProtocolError::ProtocolNotFound(_) => tonic::Status::not_found(err.to_string()),
-        ProtocolError::NetworkNotFound(_) => tonic::Status::not_found(err.to_string()),
-        ProtocolError::Internal(_) => {
-            tracing::error!(err =? err, "error during request handle");
-            tonic::Status::internal("internal error")
-        }
-    }
-}
-
-fn map_convertion_error(err: ConversionError) -> tonic::Status {
-    match err {
-        ConversionError::UserRequest(_) => tonic::Status::invalid_argument(err.to_string()),
-        ConversionError::LogicOutput(_) => tonic::Status::internal(err.to_string()),
-    }
-}
-
-fn from_resolved_domains_result(
-    result: impl IntoIterator<Item = LookupOutput>,
-    chain_id: i64,
-) -> Result<Vec<Domain>, tonic::Status> {
-    result
-        .into_iter()
-        .map(|output| conversion::domain_from_logic(output, chain_id))
-        .collect::<Result<_, _>>()
-        .map_err(map_convertion_error)
 }

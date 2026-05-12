@@ -12,7 +12,7 @@ http:
     - selector: blockscout.tacOperationLifecycle.v1.TacService.GetOperationDetails
       get: /api/v1/tac/operations/{operation_id}
 
-    - selector: blockscout.tacOperationLifecycle.v1.TacService.GetOperationByTransaction
+    - selector: blockscout.tacOperationLifecycle.v1.TacService.GetOperationsByTransaction
       get: /api/v1/tac/operations:byTx/{tx_hash}
 
     #################### Statistics ####################

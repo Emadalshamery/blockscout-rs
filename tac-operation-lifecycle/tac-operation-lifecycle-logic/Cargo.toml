@@ -1,15 +1,16 @@
 [package]
 name = "tac-operation-lifecycle-logic"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
 anyhow = { workspace = true }
 async-stream = { workspace = true }
+base64 = { workspace = true }
 blockscout-display-bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
-
+governor = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 
 sea-orm = { workspace = true, features = [
@@ -23,6 +24,7 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 tac-operation-lifecycle-entity = { path = "../tac-operation-lifecycle-entity" }
 tokio = { workspace = true }
+tonlib-core = { workspace = true }
 tower = { workspace = true, features = ["limit"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

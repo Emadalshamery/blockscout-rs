@@ -5,7 +5,7 @@ use blockscout_service_launcher::{
     test_server::{init_server, send_get_request},
 };
 use chrono::{Days, NaiveDate, Utc};
-use pretty_assertions::assert_eq;
+use pretty_assertions::{assert_eq, assert_ne};
 use stats::tests::{
     init_db::init_db_all,
     mock_blockscout::{default_mock_blockscout_api, fill_mock_blockscout_data, imitate_reindex},
@@ -13,19 +13,20 @@ use stats::tests::{
 };
 use stats_proto::blockscout::stats::v1::{self as proto_v1, BatchUpdateChartsResult};
 use stats_server::{
-    auth::{ApiKey, API_KEY_NAME},
+    auth::{API_KEY_NAME, ApiKey},
     stats,
 };
 use tokio::time::sleep;
 use url::Url;
 
 use crate::common::{
-    get_test_stats_settings, request_reupdate_from, setup_single_key, wait_for_subset_to_update,
-    ChartSubset,
+    ChartSubset, get_test_stats_settings, request_reupdate_from, setup_single_key,
+    wait_for_subset_to_update,
 };
 
 /// Uses reindexing, so needs to be independent
 #[tokio::test]
+#[serial_test::serial]
 #[ignore = "needs database"]
 async fn test_reupdate_works() {
     let test_name = "test_reupdate_works";
@@ -34,7 +35,8 @@ async fn test_reupdate_works() {
     let max_date = NaiveDate::from_str("2023-03-01").unwrap();
     fill_mock_blockscout_data(&blockscout_db, max_date).await;
     let blockscout_api = default_mock_blockscout_api().await;
-    let (mut settings, base) = get_test_stats_settings(&stats_db, &blockscout_db, &blockscout_api);
+    let (mut settings, base) =
+        get_test_stats_settings(&stats_db, &blockscout_db, &blockscout_api, None);
     // obviously don't use this anywhere except tests
     let api_key = ApiKey::from_str_infallible("123");
     setup_single_key(&mut settings, api_key.clone());
@@ -69,7 +71,7 @@ async fn test_reupdate_works() {
 
     // should reindex newTxns transitively
     let reupdate_response =
-        request_reupdate_from(&base, &api_key, "2023-01-01", vec!["txnsGrowth"]).await;
+        request_reupdate_from(&base, &api_key, "2023-01-01", vec!["txnsGrowth"], false).await;
     assert_eq!(
         reupdate_response,
         BatchUpdateChartsResult {
@@ -99,7 +101,7 @@ async fn test_reupdate_works() {
     );
 
     let reupdate_response =
-        request_reupdate_from(&base, &api_key, "2022-11-11", vec!["newTxns"]).await;
+        request_reupdate_from(&base, &api_key, "2022-11-11", vec!["newTxns"], false).await;
     assert_eq!(
         reupdate_response,
         BatchUpdateChartsResult {
@@ -129,7 +131,7 @@ async fn test_reupdate_works() {
     );
 
     let reupdate_response =
-        request_reupdate_from(&base, &api_key, "2000-01-01", vec!["newTxns"]).await;
+        request_reupdate_from(&base, &api_key, "2000-01-01", vec!["newTxns"], false).await;
     assert_eq!(
         reupdate_response,
         BatchUpdateChartsResult {
@@ -156,6 +158,11 @@ async fn test_reupdate_works() {
             ("2023-03-01", "2"),
         ])
     );
+
+    let reupdate_response =
+        request_reupdate_from(&base, &api_key, "2022-11-11", vec![], true).await;
+    assert_eq!(reupdate_response.total_rejected, 0);
+    assert_ne!(reupdate_response.accepted.len(), 0);
     blockscout_db.close_all_unwrap().await;
     stats_db.close_all_unwrap().await;
     shutdown.cancel_wait_timeout(None).await.unwrap();
@@ -168,6 +175,7 @@ pub async fn test_incorrect_reupdate_requests(base: &Url, key: ApiKey) {
     );
     request = request.json(&proto_v1::BatchUpdateChartsRequest {
         chart_names: vec!["txnsGrowth".to_string()],
+        update_all: None,
         from: Some("2023-01-01".to_string()),
         update_later: None,
     });
@@ -199,6 +207,7 @@ pub async fn test_incorrect_reupdate_requests(base: &Url, key: ApiKey) {
             .unwrap()
             .json(&proto_v1::BatchUpdateChartsRequest {
                 chart_names: vec!["txnsGrowth".to_string()],
+                update_all: None,
                 from: Some(tomorrow.format("%Y-%m-%d").to_string()),
                 update_later: None,
             });

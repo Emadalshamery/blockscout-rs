@@ -66,6 +66,11 @@ paths:
           schema:
             $ref: '#/definitions/rpcStatus'
       parameters:
+        - name: q
+          description: multi-search by operation_id, tx_hash and sender
+          in: query
+          required: false
+          type: string
         - name: page_token
           in: query
           required: false
@@ -99,12 +104,12 @@ paths:
         - TacService
   /api/v1/tac/operations:byTx/{tx_hash}:
     get:
-      operationId: TacService_GetOperationByTransaction
+      operationId: TacService_GetOperationsByTransaction
       responses:
         "200":
           description: A successful response.
           schema:
-            $ref: '#/definitions/v1OperationDetails'
+            $ref: '#/definitions/v1OperationsFullResponse'
         default:
           description: An unexpected error response.
           schema:
@@ -148,13 +153,6 @@ definitions:
       - SERVICE_UNKNOWN
     default: UNKNOWN
     description: ' - SERVICE_UNKNOWN: Used only by the Watch method.'
-  OperationRelatedTransactionBlockchainType:
-    type: string
-    enum:
-      - TAC
-      - TON
-      - Unknown
-    default: TAC
   OperationStageStageType:
     type: string
     enum:
@@ -184,6 +182,20 @@ definitions:
         items:
           type: object
           $ref: '#/definitions/protobufAny'
+  v1BlockchainAddress:
+    type: object
+    properties:
+      address:
+        type: string
+      blockchain:
+        $ref: '#/definitions/v1BlockchainType'
+  v1BlockchainType:
+    type: string
+    enum:
+      - TAC
+      - TON
+      - UNKNOWN_BLOCKCHAIN
+    default: TAC
   v1GetFullStatisticResponse:
     type: object
     properties:
@@ -258,7 +270,7 @@ definitions:
       timestamp:
         type: string
       sender:
-        type: string
+        $ref: '#/definitions/v1BlockchainAddress'
   v1OperationDetails:
     type: object
     properties:
@@ -269,7 +281,7 @@ definitions:
       timestamp:
         type: string
       sender:
-        type: string
+        $ref: '#/definitions/v1BlockchainAddress'
       status_history:
         type: array
         items:
@@ -281,7 +293,7 @@ definitions:
       hash:
         type: string
       type:
-        $ref: '#/definitions/OperationRelatedTransactionBlockchainType'
+        $ref: '#/definitions/v1BlockchainType'
   v1OperationStage:
     type: object
     properties:
@@ -327,14 +339,23 @@ definitions:
   v1OperationType:
     type: string
     enum:
-      - Error
-      - Pending
-      - TonTacTon
-      - TacTon
-      - TonTac
-      - Rollback
-      - Unknown
-    default: Error
+      - ERROR
+      - PENDING
+      - TON_TAC_TON
+      - TAC_TON
+      - TON_TAC
+      - ROLLBACK
+      - UNKNOWN
+      - INSUFFICIENT_FEE
+    default: ERROR
+  v1OperationsFullResponse:
+    type: object
+    properties:
+      items:
+        type: array
+        items:
+          type: object
+          $ref: '#/definitions/v1OperationDetails'
   v1OperationsResponse:
     type: object
     properties:

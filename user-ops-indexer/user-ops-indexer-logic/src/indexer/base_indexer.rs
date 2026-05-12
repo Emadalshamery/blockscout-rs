@@ -93,7 +93,7 @@ pub trait IndexerLogic {
         log: &Log,
     ) -> Option<sol_types::Result<T>> {
         if log.address() == entry_point && log.topic0() == Some(&T::SIGNATURE_HASH) {
-            Some(T::decode_log(&log.inner, true).map(|l| l.data))
+            Some(T::decode_log_validate(&log.inner).map(|l| l.data))
         } else {
             None
         }
@@ -475,7 +475,7 @@ mod tests {
     use std::fs;
 
     fn load_test_responses(test_name: &str) -> Vec<serde_json::Value> {
-        let path = format!("src/indexer/tests/fixtures/{}.json", test_name);
+        let path = format!("src/indexer/tests/fixtures/{test_name}.json",);
         let data = fs::read_to_string(path).expect("Unable to read test fixture file");
         serde_json::from_str(&data).expect("Unable to parse test fixture JSON")
     }
@@ -485,7 +485,7 @@ mod tests {
         for response in load_test_responses(test_name) {
             mock.push_success(&response);
         }
-        ProviderBuilder::new().on_mocked_client(mock)
+        ProviderBuilder::new().connect_mocked_client(mock)
     }
 
     #[tokio::test]

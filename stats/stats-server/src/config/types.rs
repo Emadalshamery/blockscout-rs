@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{DisplayFromStr, serde_as};
 use stats::ResolutionKind;
 use stats_proto::blockscout::stats::v1 as proto_v1;
 
@@ -39,11 +39,7 @@ impl ResolutionsSettings {
     ) -> Result<bool, ResolutionKind> {
         let is_available = available_resolutions.contains(&kind);
         if let Some(setting) = setting {
-            if is_available {
-                Ok(setting)
-            } else {
-                Err(kind)
-            }
+            if is_available { Ok(setting) } else { Err(kind) }
         } else {
             Ok(is_available)
         }
@@ -159,22 +155,6 @@ impl EnabledChartSettings {
     pub fn from_all(value: AllChartSettings) -> Option<Self> {
         value.into_enabled()
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CounterInfo<ChartSettings> {
-    pub id: String,
-    #[serde(flatten)]
-    pub settings: ChartSettings,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LineChartInfo<ChartSettings> {
-    pub id: String,
-    #[serde(flatten)]
-    pub settings: ChartSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

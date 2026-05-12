@@ -3,7 +3,7 @@ mod each;
 mod one;
 
 pub use all::{
-    prepare_range_query_statement, PullAllWithAndSort, PullAllWithAndSortCached, StatementFromRange,
+    PullAllWithAndSort, PullAllWithAndSortCached, StatementFromRange, prepare_range_query_statement,
 };
 use chrono::{Days, NaiveDate};
 pub use each::{PullEachWith, StatementFromTimespan};
@@ -13,11 +13,11 @@ pub use one::{
 use sea_orm::{FromQueryResult, Statement};
 
 use crate::{
-    charts::db_interaction::read::{cached::find_one_value_cached, find_one_value},
-    data_source::{types::Cacheable, UpdateContext},
-    types::{timespans::DateValue, Timespan, TimespanDuration, TimespanTrait, TimespanValue},
-    utils::day_start,
     ChartError,
+    charts::db_interaction::read::{cached::find_one_value_cached, find_one_value},
+    data_source::{UpdateContext, types::Cacheable},
+    types::{Timespan, TimespanDuration, TimespanTrait, TimespanValue, timespans::DateValue},
+    utils::day_start,
 };
 
 // `DailyDataStatement` is assumed to have [`MissingDatePolicy::FillZero`]
@@ -27,10 +27,11 @@ pub(crate) async fn query_yesterday_data<DailyDataStatement: StatementFromRange>
 ) -> Result<TimespanValue<NaiveDate, String>, ChartError> {
     let yesterday = calculate_yesterday(today)?;
     let query_statement = yesterday_statement::<DailyDataStatement>(cx, yesterday)?;
-    let mut data = find_one_value::<DateValue<String>>(cx, query_statement)
-        .await?
-        // no data for yesterday
-        .unwrap_or(TimespanValue::with_zero_value(yesterday));
+    let mut data =
+        find_one_value::<_, DateValue<String>>(DailyDataStatement::get_db(cx)?, query_statement)
+            .await?
+            // no data for yesterday
+            .unwrap_or(TimespanValue::with_zero_value(yesterday));
     // today's value is the number from the day before.
     // still a value is considered to be "for today" (technically)
     data.timespan = today;
@@ -48,14 +49,18 @@ where
 {
     let yesterday = calculate_yesterday(today)?;
     let query_statement = yesterday_statement::<DailyDataStatement>(cx, yesterday)?;
-    let data = find_one_value_cached::<Value>(cx, query_statement)
-        .await?
-        .map(|mut data| {
-            // today's value is the number from the day before.
-            // still a value is considered to be "for today" (technically)
-            *data.timespan_mut() = today;
-            data
-        });
+    let data = find_one_value_cached::<_, Value>(
+        DailyDataStatement::get_db(cx)?,
+        &cx.cache,
+        query_statement,
+    )
+    .await?
+    .map(|mut data| {
+        // today's value is the number from the day before.
+        // still a value is considered to be "for today" (technically)
+        *data.timespan_mut() = today;
+        data
+    });
     Ok(data)
 }
 
@@ -73,9 +78,8 @@ fn yesterday_statement<DailyDataStatement: StatementFromRange>(
 ) -> Result<Statement, ChartError> {
     let today = yesterday.saturating_add(TimespanDuration::from_days(1));
     let yesterday_range = day_start(&yesterday)..day_start(&today);
-    Ok(DailyDataStatement::get_statement(
+    Ok(DailyDataStatement::get_statement_with_context(
+        cx,
         Some(yesterday_range),
-        &cx.blockscout_applied_migrations,
-        &cx.enabled_update_charts_recursive,
     ))
 }

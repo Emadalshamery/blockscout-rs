@@ -30,7 +30,7 @@ pub async fn maybe_offchain_resolution(
         }
         Err(err) => {
             tracing::error!(
-                name = name.inner.name,
+                name = name.inner.name(),
                 error = err.to_string(),
                 "failed to resolve d3 name"
             );
@@ -49,7 +49,7 @@ async fn resolve_d3_name(
 
     let default_resolver = d3.resolver_contract;
 
-    let (resolver_address, maybe_existing_domain) =
+    let (resolver_address, maybe_existing_domain_vid) =
         match subgraph::sql::get_domain(db, name, true).await? {
             Some(detailed_domain) => {
                 let domain = Domain::from(detailed_domain);
@@ -59,7 +59,7 @@ async fn resolve_d3_name(
                     .and_then(|r| ResolverInSubgraph::from_str(r).ok())
                     .map(|r| r.resolver_address)
                     .unwrap_or(default_resolver);
-                (resolver, Some(domain))
+                (resolver, Some(domain.vid))
             }
             None => (default_resolver, None),
         };
@@ -74,7 +74,7 @@ async fn resolve_d3_name(
     .await?;
     tracing::debug!(data =? offchain_resolution, "fetched offchain resolution");
     let creation_domain =
-        offchain_resolution_to_resolve_result(name, offchain_resolution, maybe_existing_domain);
+        offchain_resolution_to_resolve_result(name, offchain_resolution, maybe_existing_domain_vid);
     Ok(creation_domain)
 }
 
@@ -86,23 +86,20 @@ async fn get_offchain_resolution(
     address_resolve_technique: &AddressResolveTechnique,
 ) -> Result<DomainInfoFromOffchainResolution, anyhow::Error> {
     let resolve_result =
-        alloy_ccip_read::d3::resolve_d3_name(reader, resolver_address, &name.inner.name, "")
+        alloy_ccip_read::d3::resolve_d3_name(reader, resolver_address, name.inner.name(), "")
             .await?;
     let addr = resolve_result.addr.into_value();
-    let addr2name = match address_resolve_technique {
-        AddressResolveTechnique::Addr2Name => {
+    let addr_to_name = match address_resolve_technique {
+        AddressResolveTechnique::Addr2Name | AddressResolveTechnique::PrimaryNameRecord => {
             let reverse_resolve_result =
                 alloy_ccip_read::d3::reverse_resolve_d3_name(reader, addr, resolver_address, "")
                     .await?;
-            DomainName::new(
+
+            DomainName::new_from_name_and_protocol(
                 &reverse_resolve_result.name.value,
-                name.deployed_protocol
-                    .protocol
-                    .info
-                    .protocol_specific
-                    .empty_label_hash(),
+                &name.deployed_protocol.protocol.info.protocol_specific,
             )
-            .map(|name| name.name)
+            .map(|name| name.name().to_string())
             .ok()
         }
         AddressResolveTechnique::ReverseRegistry | AddressResolveTechnique::AllDomains => None,
@@ -111,13 +108,13 @@ async fn get_offchain_resolution(
     let expiry_date = metadata.get_expiration_date();
 
     Ok(DomainInfoFromOffchainResolution {
-        id: name.inner.id.clone(),
-        name: name.inner.name.clone(),
+        id: name.inner.id().to_string(),
+        name: name.inner.name().to_string(),
         addr,
         resolver_address,
         expiry_date,
         stored_offchain: true,
         resolved_with_wildcard: false,
-        addr2name,
+        addr_to_name,
     })
 }

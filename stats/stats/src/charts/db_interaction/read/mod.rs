@@ -1,18 +1,24 @@
 use std::ops::Range;
 
-use chrono::{DateTime, Utc};
-use sea_orm::DbErr;
+use chrono::{DateTime, NaiveDateTime, Utc};
+use sea_orm::{DatabaseConnection, DbErr};
 use thiserror::Error;
 
 use crate::{
-    data_source::{kinds::remote_db::RemoteQueryBehaviour, UpdateContext},
+    ChartError, ChartKey, Mode,
+    charts::db_interaction::read::{
+        interchain::get_min_date_interchain, multichain::get_min_date_multichain,
+    },
+    data_source::{UpdateContext, kinds::remote_db::RemoteQueryBehaviour},
     range::UniversalRange,
-    ChartError, ChartKey,
 };
 
 mod blockscout;
 pub mod cached;
+pub mod interchain;
 mod local_db;
+pub mod multichain;
+pub mod zetachain_cctx;
 
 pub use blockscout::*;
 pub use local_db::*;
@@ -27,19 +33,29 @@ pub enum ReadError {
     IntervalTooLarge(u32),
 }
 
-pub struct QueryAllBlockTimestampRange;
+pub struct QueryFullIndexerTimestampRange;
 
-impl RemoteQueryBehaviour for QueryAllBlockTimestampRange {
+impl RemoteQueryBehaviour for QueryFullIndexerTimestampRange {
     type Output = Range<DateTime<Utc>>;
 
     async fn query_data(
         cx: &UpdateContext<'_>,
         _range: UniversalRange<DateTime<Utc>>,
     ) -> Result<Self::Output, ChartError> {
-        let start_timestamp = get_min_date_blockscout(cx.blockscout)
-            .await
-            .map_err(ChartError::BlockscoutDB)?
-            .and_utc();
+        let min_date = get_min_date(cx.indexer_db, cx.mode).await;
+
+        let start_timestamp = min_date.map_err(ChartError::IndexerDB)?.and_utc();
         Ok(start_timestamp..cx.time)
+    }
+}
+
+pub async fn get_min_date(
+    indexer_db: &DatabaseConnection,
+    mode: crate::Mode,
+) -> Result<NaiveDateTime, DbErr> {
+    match mode {
+        Mode::Interchain => get_min_date_interchain(indexer_db).await,
+        Mode::MultichainAggregator => get_min_date_multichain(indexer_db).await,
+        Mode::Blockscout | Mode::Zetachain => get_min_date_blockscout(indexer_db).await,
     }
 }

@@ -1,8 +1,8 @@
 //! Common utilities used across statistics
 
-use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, TimeDelta, Utc};
 use sea_orm::Value;
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 
 // this const is not public in `chrono` for some reason
 pub const NANOS_PER_SEC: i32 = 1_000_000_000;
@@ -10,6 +10,12 @@ pub const NANOS_PER_SEC: i32 = 1_000_000_000;
 pub fn day_start(date: &NaiveDate) -> DateTime<Utc> {
     date.and_time(NaiveTime::from_hms_opt(0, 0, 0).expect("correct time"))
         .and_utc()
+}
+
+pub fn interval_24h(until: DateTime<Utc>) -> RangeInclusive<DateTime<Utc>> {
+    until
+        .checked_sub_signed(TimeDelta::hours(24))
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)..=until
 }
 
 /// Used inside [`sql_with_range_filter_opt`]
@@ -20,7 +26,8 @@ pub fn day_start(date: &NaiveDate) -> DateTime<Utc> {
 /// ### Results
 /// Vec should be appended to the args.
 /// String should be inserted in places for filter.
-pub(crate) fn produce_filter_and_values(
+#[doc(hidden)]
+pub fn produce_filter_and_values(
     range: Option<Range<DateTime<Utc>>>,
     filter_by: &str,
     filter_arg_number_start: usize,
@@ -41,25 +48,107 @@ pub(crate) fn produce_filter_and_values(
     }
 }
 
+/// Used inside [`sql_with_multichain_filter_opt`]
+///
+/// `filter_arg_number_start = len(arg)+1 // (length of other args + 1)`
+/// `filter_by` - column/property(?) name in SQL (typically "chain_id")
+///
+/// ### Results
+/// Vec should be appended to the args.
+/// String should be inserted in places for filter.
+#[doc(hidden)]
+pub fn produce_multichain_filter_and_values(
+    multichain_filter: Option<&Vec<u64>>,
+    filter_by: &str,
+    filter_arg_number_start: usize,
+) -> (String, Vec<Value>) {
+    if let Some(filter) = multichain_filter
+        && !filter.is_empty()
+    {
+        let placeholders: Vec<String> = (0..filter.len())
+            .map(|i| format!("${}", filter_arg_number_start + i))
+            .collect();
+        let filter_str = format!(" AND {filter_by} IN ({})", placeholders.join(", "));
+        let filter_values: Vec<Value> = filter
+            .iter()
+            .map(|chain_id| Value::BigInt(Some(*chain_id as i64)))
+            .collect();
+        (filter_str, filter_values)
+    } else {
+        ("".to_owned(), vec![])
+    }
+}
+
 // had to make macro because otherwise can't use `statement_with_filter_placeholder`
 // in `format!` :(
-/// Add filter statement, if `range` provided.
+/// Construct statement with filter, if `range` provided.
 ///
 /// `statement_with_filter_placeholder` must have `filter` named parameter
-/// `filter_by` is a column/property(?) in SQL used to generate string for `filter`
+/// `filter_by` is a column/property(?) in SQL used to generate string for `filter`.
+///
+/// `$value` or `$values_vec` will be passed as regular values to the statement. Range values
+/// are placed in the back, so do not worry about them when referring to them in the statement.
 ///
 /// all subsequent arguments (after `range` will be passed to `format!` macro to the
-/// resulting statement). of course do not pass user-supplied data there.
+/// resulting statement). Avoid passing user-supplied data there, as it may lead to SQL injection.
+///
+/// ### Examples
+/// ```rust
+/// # use chrono::{DateTime, Utc};
+/// # use sea_orm::{DbBackend, Value};
+/// # use stats::sql_with_range_filter_opt;
+/// # let start = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+/// # let end = DateTime::<Utc>::from_timestamp(1, 0).unwrap();
+/// sql_with_range_filter_opt!(
+///     DbBackend::Postgres,
+///     r#"SELECT * FROM users WHERE hair_color = $1 AND name LIKE {name_pattern} AND {filter}"#,
+///     ["red".into()],
+///     "age",
+///     Some(start..end),
+///     name_pattern = "John%",
+/// );
+/// ```
+#[macro_export]
 macro_rules! sql_with_range_filter_opt {
     (
         $db_backend: expr,
         $statement_with_filter_placeholder: literal,
         [$($value: expr),* $(,)?],
-        $filter_by:expr,
-        $range:expr, $($args:tt)*
+        $($rest_args:tt)*
+    ) => {
+        sql_with_range_filter_opt!(
+            $db_backend,
+            $statement_with_filter_placeholder,
+            ::std::vec![ $($value),* ],
+            $($rest_args)*
+        )
+    };
+    (
+        $db_backend: expr,
+        $statement_with_filter_placeholder: literal,
+        $values: expr,
+        $filter_by: expr,
+        $range: expr
     ) => {
         {
-            let mut values = ::std::vec![ $($value),* ];
+            sql_with_range_filter_opt!($db_backend,
+                $statement_with_filter_placeholder,
+                $values,
+                $filter_by,
+                $range,
+            )
+        }
+    };
+    (
+        $db_backend: expr,
+        $statement_with_filter_placeholder: literal,
+        $values_vec: expr,
+        $filter_by: expr,
+        $range: expr,
+        $($args:tt)*
+    ) => {
+        {
+            let mut values: ::std::vec::Vec<_> = $values_vec;
             let filter_arg_number_start = values.len()+1;
             let (filter_str, filter_values) = $crate::utils::produce_filter_and_values(
                 $range, $filter_by, filter_arg_number_start
@@ -73,25 +162,227 @@ macro_rules! sql_with_range_filter_opt {
             ::sea_orm::Statement::from_sql_and_values($db_backend, &sql, values)
         }
     };
+}
+
+pub(crate) use sql_with_range_filter_opt;
+
+/// Add multichain filter statement, if `multichain_filter` provided and not empty.
+///
+/// `statement_with_filter_placeholder` must have `multichain_filter` named parameter.
+/// `filter_by` is a column/property(?) in SQL used to generate string for `multichain_filter`
+/// (typically "chain_id").
+///
+/// `$value` or `$values_vec` will be passed as regular values to the statement. Filter values
+/// are placed in the back, so do not worry about them when referring to them in the statement.
+///
+/// All subsequent arguments (after `multichain_filter`) will be passed to `format!` macro to the
+/// resulting statement. Avoid passing user-supplied data there, as it may lead to SQL injection.
+///
+/// ### Examples
+/// ```rust
+/// # use sea_orm::{DbBackend, Value};
+/// # use stats::sql_with_multichain_filter_opt;
+/// sql_with_multichain_filter_opt!(
+///     DbBackend::Postgres,
+///     r#"SELECT date, SUM(value) as value FROM txns
+///        WHERE status = $1 {multichain_filter}
+///        GROUP BY date"#,
+///     ["confirmed".into()],
+///     "chain_id",
+///     Some(vec![1u64, 137, 42161]),
+/// );
+/// ```
+#[macro_export]
+macro_rules! sql_with_multichain_filter_opt {
     (
         $db_backend: expr,
         $statement_with_filter_placeholder: literal,
         [$($value: expr),* $(,)?],
-        $filter_by:expr,
-        $range:expr
+        $($rest_args:tt)*
+    ) => {
+        sql_with_multichain_filter_opt!(
+            $db_backend,
+            $statement_with_filter_placeholder,
+            ::std::vec![ $($value),* ],
+            $($rest_args)*
+        )
+    };
+    (
+        $db_backend: expr,
+        $statement_with_filter_placeholder: literal,
+        $values: expr,
+        $filter_by: expr,
+        $multichain_filter: expr
     ) => {
         {
-            sql_with_range_filter_opt!($db_backend,
+            sql_with_multichain_filter_opt!($db_backend,
                 $statement_with_filter_placeholder,
-                [$($value),*],
+                $values,
                 $filter_by,
-                $range,
+                $multichain_filter,
             )
+        }
+    };
+    (
+        $db_backend: expr,
+        $statement_with_filter_placeholder: literal,
+        $values_vec: expr,
+        $filter_by: expr,
+        $multichain_filter: expr,
+        $($args:tt)*
+    ) => {
+        {
+            let mut values: ::std::vec::Vec<_> = $values_vec;
+            let filter_arg_number_start = values.len()+1;
+            let (filter_str, filter_values) = $crate::utils::produce_multichain_filter_and_values(
+                $multichain_filter.as_ref(), $filter_by, filter_arg_number_start
+            );
+            values.extend(filter_values.into_iter());
+            let sql = ::std::format!(
+                $statement_with_filter_placeholder,
+                multichain_filter=filter_str,
+                $($args)*
+            );
+            ::sea_orm::Statement::from_sql_and_values($db_backend, &sql, values)
         }
     };
 }
 
-pub(crate) use sql_with_range_filter_opt;
+pub(crate) use sql_with_multichain_filter_opt;
+
+/// Add both range and multichain filter statements (if provided).
+///
+/// `statement_with_filter_placeholder` must have both `filter` and `multichain_filter` named parameters.
+/// `filter_by` is a column/property(?) in SQL used to generate string for the range filter
+/// (typically a timestamp column).
+/// `multichain_filter_by` is a column/property(?) in SQL used to generate string for the multichain filter
+/// (typically "chain_id").
+///
+/// `$value` or `$values_vec` will be passed as regular values to the statement. Filter values
+/// are placed in the back, so do not worry about them when referring to them in the statement.
+///
+/// All subsequent arguments (after `multichain_filter`) will be passed to `format!` macro to the
+/// resulting statement. Avoid passing user-supplied data there, as it may lead to SQL injection.
+///
+/// ### Examples
+/// ```rust
+/// # use chrono::{DateTime, Utc};
+/// # use sea_orm::{DbBackend, Value};
+/// # use stats::sql_with_range_and_multichain_filters;
+/// # let start_time = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+/// # let end_time = DateTime::<Utc>::from_timestamp(1, 0).unwrap();
+/// sql_with_range_and_multichain_filters!(
+///     DbBackend::Postgres,
+///     r#"SELECT date, COUNT(*) as value FROM messages
+///        WHERE status = $1 AND name LIKE {name_pattern} {filter} {multichain_filter}
+///        GROUP BY date"#,
+///     ["delivered".into()],
+///     "blocks.timestamp",
+///     Some(start_time..end_time),
+///     "chain_id",
+///     Some(vec![1u64, 137]),
+///     name_pattern = "prefix%",
+/// );
+/// ```
+#[macro_export]
+macro_rules! sql_with_range_and_multichain_filters {
+    (
+        $db_backend: expr,
+        $statement_with_filter_placeholder: literal,
+        [$($value: expr),* $(,)?],
+        $($rest_args:tt)*
+    ) => {
+        sql_with_range_and_multichain_filters!(
+            $db_backend,
+            $statement_with_filter_placeholder,
+            ::std::vec![ $($value),* ],
+            $($rest_args)*
+        )
+    };
+    (
+        $db_backend: expr,
+        $statement_with_filter_placeholder: literal,
+        $values: expr,
+        $filter_by: expr,
+        $range: expr,
+        $multichain_filter_by: expr,
+        $multichain_filter: expr
+    ) => {
+        {
+            sql_with_range_and_multichain_filters!($db_backend,
+                $statement_with_filter_placeholder,
+                $values,
+                $filter_by,
+                $range,
+                $multichain_filter_by,
+                $multichain_filter,
+            )
+        }
+    };
+    (
+        $db_backend: expr,
+        $statement_with_filter_placeholder: literal,
+        $values_vec: expr,
+        $filter_by: expr,
+        $range: expr,
+        $multichain_filter_by: expr,
+        $multichain_filter: expr,
+        $($args:tt)*
+    ) => {
+        {
+            let mut values: ::std::vec::Vec<_> = $values_vec;
+            let filter_arg_number_start = values.len()+1;
+            let (range_filter_str, range_filter_values) = $crate::utils::produce_filter_and_values(
+                $range, $filter_by, filter_arg_number_start
+            );
+            values.extend(range_filter_values.into_iter());
+            let multichain_filter_arg_number_start = values.len()+1;
+            let (multichain_filter_str, multichain_filter_values) = $crate::utils::produce_multichain_filter_and_values(
+                $multichain_filter.as_ref(), $multichain_filter_by, multichain_filter_arg_number_start
+            );
+            values.extend(multichain_filter_values.into_iter());
+            let sql = ::std::format!(
+                $statement_with_filter_placeholder,
+                filter=range_filter_str,
+                multichain_filter=multichain_filter_str,
+                $($args)*
+            );
+            ::sea_orm::Statement::from_sql_and_values($db_backend, &sql, values)
+        }
+    };
+}
+
+pub(crate) use sql_with_range_and_multichain_filters;
+
+macro_rules! singleton_groups {
+    ($($chart: ident),+ $(,)?) => {
+        $(
+            ::paste::paste!(
+                $crate::construct_update_group!([< $chart Group >] {
+                    charts: [$chart]
+                });
+            );
+        )+
+    };
+}
+
+pub(crate) use singleton_groups;
+
+macro_rules! derive_setters {
+    ($t: ident, [$($field: ident: $field_t: ident),* $(,)?]) => {
+        $(
+            impl $t {
+                ::paste::paste! {
+                    pub fn [< with_ $field >](self, $field: $field_t) -> Self {
+                        Self { $field, ..self }
+                    }
+                }
+            }
+        )*
+    };
+}
+
+pub(crate) use derive_setters;
 
 #[cfg(test)]
 mod test {

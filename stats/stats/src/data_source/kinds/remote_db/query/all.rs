@@ -8,24 +8,37 @@ use chrono::{DateTime, Utc};
 use sea_orm::{FromQueryResult, Statement};
 
 use crate::{
+    ChartError, ChartKey,
     charts::db_interaction::read::{cached::find_all_cached, find_all_points},
     data_source::{
-        kinds::remote_db::RemoteQueryBehaviour,
-        types::{BlockscoutMigrations, Cacheable, UpdateContext},
+        kinds::remote_db::{RemoteQueryBehaviour, db_choice::DatabaseChoice},
+        types::{Cacheable, IndexerMigrations, UpdateContext},
     },
-    range::{data_source_query_range_to_db_statement_range, UniversalRange},
+    range::{UniversalRange, data_source_query_range_to_db_statement_range},
     types::{TimespanTrait, TimespanValue},
-    ChartError, ChartKey,
 };
 
-pub trait StatementFromRange {
+pub trait StatementFromRange: DatabaseChoice {
     /// `completed_migrations` and `enabled_update_charts_recursive`
     /// can be used for selecting more optimal query
     fn get_statement(
+        _range: Option<Range<DateTime<Utc>>>,
+        _completed_migrations: &IndexerMigrations,
+        _enabled_update_charts_recursive: &HashSet<ChartKey>,
+    ) -> Statement {
+        panic!("not implemented for this statement")
+    }
+
+    fn get_statement_with_context(
+        cx: &UpdateContext<'_>,
         range: Option<Range<DateTime<Utc>>>,
-        completed_migrations: &BlockscoutMigrations,
-        enabled_update_charts_recursive: &HashSet<ChartKey>,
-    ) -> Statement;
+    ) -> Statement {
+        Self::get_statement(
+            range,
+            &cx.indexer_applied_migrations,
+            &cx.enabled_update_charts_recursive,
+        )
+    }
 }
 
 /// Pull data from remote (blockscout) db according to statement
@@ -60,7 +73,7 @@ where
         range: UniversalRange<DateTime<Utc>>,
     ) -> Result<Vec<TimespanValue<Resolution, Value>>, ChartError> {
         let statement = prepare_range_query_statement::<S, AllRangeSource>(cx, range).await?;
-        find_all_points(cx, statement).await
+        find_all_points(S::get_db(cx)?, statement).await
     }
 }
 /// Pull data from remote (blockscout) db according to statement
@@ -93,7 +106,7 @@ where
         range: UniversalRange<DateTime<Utc>>,
     ) -> Result<Vec<Point>, ChartError> {
         let statement = prepare_range_query_statement::<S, AllRangeSource>(cx, range).await?;
-        find_all_cached(cx, statement).await
+        find_all_cached(&cx.cache, S::get_db(cx)?, statement).await
     }
 }
 
@@ -108,9 +121,5 @@ where
     // to not overcomplicate the queries
     let query_range =
         data_source_query_range_to_db_statement_range::<AllRangeSource>(cx, range).await?;
-    Ok(S::get_statement(
-        query_range,
-        &cx.blockscout_applied_migrations,
-        &cx.enabled_update_charts_recursive,
-    ))
+    Ok(S::get_statement_with_context(cx, query_range))
 }

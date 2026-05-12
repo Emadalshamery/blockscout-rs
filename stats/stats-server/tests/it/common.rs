@@ -8,8 +8,8 @@ use blockscout_service_launcher::{
 use reqwest::{RequestBuilder, Response};
 use stats_proto::blockscout::stats::v1 as proto_v1;
 use stats_server::{
-    auth::{ApiKey, API_KEY_NAME},
-    Settings,
+    Mode, Settings,
+    auth::{API_KEY_NAME, ApiKey},
 };
 use tokio::{
     task::JoinSet,
@@ -47,6 +47,7 @@ pub enum ChartSubset {
     InternalTransactionsDependent,
     #[allow(unused)]
     UserOpsDependent,
+    ZetachainCctxDependent,
     AllCharts,
 }
 
@@ -61,6 +62,7 @@ pub async fn wait_for_subset_to_update(base: &Url, subset: ChartSubset) {
                 statuses.internal_transactions_dependent_status()
             }
             ChartSubset::UserOpsDependent => statuses.user_ops_dependent_status(),
+            ChartSubset::ZetachainCctxDependent => statuses.zetachain_cctx_dependent_status(),
             ChartSubset::AllCharts => statuses.all_status(),
         };
         if matching_status == proto_v1::ChartSubsetUpdateStatus::CompletedInitialUpdate {
@@ -104,19 +106,29 @@ pub fn get_test_stats_settings(
     stats_db: &TestDbGuard,
     blockscout_db: &TestDbGuard,
     blockscout_api: &MockServer,
+    zetachain_cctx_db: Option<&TestDbGuard>,
 ) -> (Settings, Url) {
     let mut settings = Settings::build().expect("Failed to build settings");
     let (server_settings, base) = get_test_server_settings();
     settings.server = server_settings;
-    settings.charts_config = PathBuf::from_str("../config/charts.json").unwrap();
-    settings.layout_config = PathBuf::from_str("../config/layout.json").unwrap();
-    settings.update_groups_config = PathBuf::from_str("../config/update_groups.json").unwrap();
+    settings.charts_config =
+        PathBuf::from_str("../config/blockscout_instance/charts.json").unwrap();
+    settings.layout_config =
+        PathBuf::from_str("../config/blockscout_instance/layout.json").unwrap();
+    settings.update_groups_config =
+        PathBuf::from_str("../config/blockscout_instance/update_groups.json").unwrap();
     settings.db_url = stats_db.db_url();
-    settings.blockscout_db_url = blockscout_db.db_url();
+    settings.indexer_db_url = Some(blockscout_db.db_url());
     settings.blockscout_api_url = Some(url::Url::from_str(&blockscout_api.uri()).unwrap());
+    settings.second_indexer_db_url = zetachain_cctx_db.map(|db| db.db_url());
     settings.enable_all_arbitrum = true;
     settings.enable_all_op_stack = true;
     settings.enable_all_eip_7702 = true;
+    settings.mode = if zetachain_cctx_db.is_some() {
+        Mode::Zetachain
+    } else {
+        Mode::Blockscout
+    };
     settings.metrics.enabled = false;
     settings.jaeger.enabled = false;
     // initialized separately to prevent errors (with `try_init`)
@@ -129,6 +141,7 @@ pub async fn request_reupdate_from(
     key: &ApiKey,
     from: &str,
     charts: Vec<&str>,
+    update_all: bool,
 ) -> proto_v1::BatchUpdateChartsResult {
     let chart_names = charts.into_iter().map(|s| s.to_string()).collect();
     send_request_with_key(
@@ -137,6 +150,7 @@ pub async fn request_reupdate_from(
         reqwest::Method::POST,
         Some(&proto_v1::BatchUpdateChartsRequest {
             chart_names,
+            update_all: Some(update_all),
             from: Some(from.into()),
             update_later: None,
         }),
@@ -203,9 +217,9 @@ pub async fn run_consolidated_tests(mut tests: JoinSet<()>, log_prefix: &str) {
     let passed = total - failed;
     let msg = format!("[{log_prefix}]: {passed}/{total} consolidated tests passed");
     if failed > 0 {
-        panic!("{}", msg)
+        panic!("{msg}")
     } else {
-        println!("{}", msg)
+        println!("{msg}")
     }
 }
 

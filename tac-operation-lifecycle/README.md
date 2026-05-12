@@ -15,23 +15,29 @@ This feature addresses that by indexing TAC Operations in a way that provides a 
 ## Improvements 
 
 Indexer Logic Description
-The TAC Operation Lifecycle Indexer follows a three-stage process:
+The TAC Operation Lifecycle Indexer follows a process describing below:
 1. Timeline Dissection:
-* The indexer divides the timeline into fixed-size `intervals`
-* It maintains a `watermark` that marks the latest processed timestamp
-* The `watermark` advances as `intervals` are processed
-* For historical data, it processes `intervals` from oldest to newest
-For realtime data, it continuously creates new `intervals`
-2. Interval Processing:
+* The indexer divides the historical timeline into fixed-size `intervals`
+* The `watermark` marks the latest timestamp covered by intervals
+* The `watermark` advances as new `intervals` are added
+* For historical data, `intervals` are processed in both directions: from the oldest to the newest and vice versa.
+
+2. Historical Interval Processing:
 * For each interval, the indexer fetches a list of operations that occurred within that time window
 * Operations are stored in the database with a `pending` status
 * The interval is marked as `finalized` once operations are fetched
-* If fetching fails, the interval is scheduled for retry with exponential backoff
-3. Operation Processing:
+* If fetching fails, the interval is scheduled for retry
+
+3. Realtime Interval Processing
+* For realtime data, new `intervals` are not created in advance.
+* A separate thread fetches new operations starting from the latest known operation up to the current timestamp.
+* Once new operations are fetched, a new interval in the `finalized` state is created to match the request range — from the previously latest known operation to the current one. This approach helps avoid issues caused by the remote TAC RPC being out of sync.
+
+4. Operation Processing:
 * For each operation, the indexer fetches detailed stage information
 * Operation stages track the lifecycle of the operation across different blockchains
 * Once stages are fetched, the operation is marked as `finalized`
-* If fetching fails, the operation is scheduled for retry with exponential backoff
+* If fetching fails, the operation is scheduled for retry
 
 
 ```
@@ -59,22 +65,23 @@ For realtime data, it continuously creates new `intervals`
 
 We persist and track latest saved interval (`watermark`) in the database and advance it alongside with creating new intervals.
 Apart from latest interval we also track latest `operation` so that if we get a falsely empty response we would automatically request it again.
-This PR follows similar practices  from `da_indexer` specifically the server launches multiple future streams:
-* historic operation fetcher that selects `intervals` in ascending order from a configurable starting timestamp
+The indexer follows the following practices specifically the server launches multiple future streams:
+* historic operation fetcher that selects `intervals` in both directions from a configurable starting timestamp
 * realtime operation fetcher that selects `intervals` in ascending order after the service has started
-* failed intervals and operations fetcher resends failed requests with exponential backoff 
+* failed intervals and operations fetcher resends failed requests 
 
 ```                                                                                       
 +----------------------------------------------------------------------------------------+
-|                                    PRIORITIZED STREAMS                                  |
+|  (high prio)         --->         PRIORITIZED STREAMS         --->         (low prio)  |
 +----------------------------------------------------------------------------------------+
                                                                                           
                                                                                           
 +-------------------+     +-------------------+     +-------------------+                  
 |                   |     |                   |     |                   |                  
-|  Realtime         |     |  Historical       |     |  Operations       |                  
-|  Stream           |     |  Intervals        |     |  Stream           |                  
-|                   |     |  Stream           |     |                   |                  
+|  Operation        |     |  Historical       |     |  Operations and   |                  
+|  Streams          |     |  Intervals        |     |  Intervals        |                  
+|  (Pending + New)  |     |  Streams          |     |  Retry Streams    |
+|                   |     |                   |     |                   |                  
 +-------------------+     +-------------------+     +-------------------+                  
         |                         |                         |                              
         |                         |                         |                              
@@ -86,34 +93,42 @@ This PR follows similar practices  from `da_indexer` specifically the server lau
 
 ## Configuration Parameters
 
-Parameters can be configured either using a `yaml`file or environment variables. See example in `tac-operation-lifecycle-server/config.yaml`
+Parameters can be configured either using a `toml` file or environment variables. See example in `tac-operation-lifecycle-server/config.toml`
 
 [anchor]: <> (anchors.envs.start.service)
 
 | Variable | Req&#x200B;uir&#x200B;ed | Description | Default value |
 | --- | --- | --- | --- |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT__URL` | true | e.g. `postgres://postgres:postgres@database:5432/blockscout` | |
-| `TAC_OPERATION_LIFECYCLE__INDEXER__CONCURRENCY` | true |  Number of concurrent operations the indexer can process  | number of logical CPU's |
-| `TAC_OPERATION_LIFECYCLE__RPC__URL` | true | RPC endpoint e.g. `https://data.turin.tac.build/` | |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__ACQUIRE_TIMEOUT` | | e.g. `10` | `null` |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__CONNECT_TIMEOUT` | | e.g. `10` | `null` |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__IDLE_TIMEOUT` | | | `null` |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__MAX_CONNECTIONS` | | e.g. `20` | `null` |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__MAX_LIFETIME` | | | `null` |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__MIN_CONNECTIONS` | | e.g. `10` | `null` |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING` | | | `true` |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING_LEVEL` | | | `debug` |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__CREATE_DATABASE` | | e.g. `true` | `false` |
-| `TAC_OPERATION_LIFECYCLE__DATABASE__RUN_MIGRATIONS` | | e.g. `true` | `false` |
-| `TAC_OPERATION_LIFECYCLE__INDEXER__CATCHUP_INTERVAL` | |  The catchup_interval defines the size of time windows used for processing historical data. Smaller intervals provide more granular processing but may increase the number of RPC calls. | `5` |
-| `TAC_OPERATION_LIFECYCLE__INDEXER__POLLING_INTERVAL` | | The polling_interval determines how frequently the indexer checks for new data. Setting it to 0 disables polling. | `0` |
-| `TAC_OPERATION_LIFECYCLE__INDEXER__RESTART_DELAY` | | | `60` |
-| `TAC_OPERATION_LIFECYCLE__INDEXER__RETRY_INTERVAL` | | The retry_interval is used as the base for exponential backoff when retrying failed operations. The actual retry delay will increase exponentially with each retry attempt.| `180` |
-| `TAC_OPERATION_LIFECYCLE__INDEXER__START_TIMESTAMP` | | The start_timestamp allows you to specify a custom starting point for historical data indexing. Setting it to 0 means the indexer will  start from the earliest available data. All of the events before this epoch are essentially ignored. This could be used for partial sync | `0` |
-| `TAC_OPERATION_LIFECYCLE__RPC__AUTH_TOKEN` | | | `null` |
-| `TAC_OPERATION_LIFECYCLE__RPC__MAX_REQUEST_SIZE` | | | `104857600` |
-| `TAC_OPERATION_LIFECYCLE__RPC__MAX_RESPONSE_SIZE` | | | `104857600` |
-| `TAC_OPERATION_LIFECYCLE__RPC__REQUEST_PER_SECOND` | | | `100` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__CONCURRENCY` | | The number of jobs simultaneously fetched from the common job stream. | `num_of_cores` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__CATCHUP_INTERVAL` | | The size of time windows (in seconds) used for processing historical data. Smaller intervals provide more granular processing but may increase the number of RPC calls. | `5` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__POLLING_INTERVAL` | | Determines how frequently the indexer checks for new (realtime) data. The value is provided in seconds. | `2` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__RETRY_INTERVAL` | | Determines how frequently the indexer will retry failed intervals and operations. The value is provided in seconds. | `120` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__START_TIMESTAMP` | | Specifies a custom starting point for historical data indexing. Setting it to `0` means the indexer will start from the earliest available data (this will significantly increase sync time). Events before this epoch are ignored. Useful for partial sync. | `0` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__FOREVER_PENDING_OPERATIONS_AGE_SEC` | | The operation is considered completed if it is older than this value (in seconds) but remains in the `PENDING` state. The value is hardcoded by the protocol and equals one week. | `604800` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__INTERVALS_QUERY_BATCH` | | The number of pending intervals simultaneously fetched from the database to be processed. Lower values will reduce database load. | `10` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__INTERVALS_RETRY_BATCH` | | The number of failed intervals simultaneously fetched from the database during the retry cycle. Lower values will reduce database load. | `10` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__INTERVALS_LOOP_DELAY_MS` | | Delay between interval fetches (from the database) to prevent a tight loop. The value is in milliseconds. | `100` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__OPERATIONS_QUERY_BATCH` | | The number of pending operations simultaneously fetched from the database to be processed. Lower values will reduce database load. | `10` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__OPERATIONS_RETRY_BATCH` | | The number of failed operations simultaneously fetched from the database during the retry cycle. Lower values will reduce database load. | `10` |
+| `TAC_OPERATION_LIFECYCLE__INDEXER__OPERATIONS_LOOP_DELAY_MS` | | Delay between operation fetches (from the database) to prevent a tight loop. The value is in milliseconds. | `200` |
+| `TAC_OPERATION_LIFECYCLE__RPC__URL` | | TAC Staging Service RPC endpoint. | `https://data.turin.tac.build/` |
+| `TAC_OPERATION_LIFECYCLE__RPC__REQUEST_PER_SECOND` | | The rate limit for requests per second. | `100` |
+| `TAC_OPERATION_LIFECYCLE__RPC__NUM_OF_RETRIES` | | The number of retries for each request. A request is considered failed after this number of retries. | `10` |
+| `TAC_OPERATION_LIFECYCLE__RPC__RETRY_DELAY_MS` | | The delay in milliseconds between retries. | `1000` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CREATE_DATABASE` | | Whether to create the database if it does not exist. | `false` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__RUN_MIGRATIONS` | | Whether to run database migrations on startup. | `false` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT__URL` | | The database connection URL (e.g., `postgres://postgres:postgres@database:5432/blockscout`). | None |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__ACQUIRE_TIMEOUT` | | The timeout (in seconds) for acquiring a database connection. | `null` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__CONNECT_TIMEOUT` | | The timeout (in seconds) for establishing a database connection. | `null` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__IDLE_TIMEOUT` | | The timeout (in seconds) for idle database connections. | `null` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__MAX_CONNECTIONS` | | The maximum number of database connections. | `null` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__MAX_LIFETIME` | | The maximum lifetime (in seconds) of a database connection. | `null` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__MIN_CONNECTIONS` | | The minimum number of database connections. | `null` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING` | | Whether to enable SQLx logging. | `true` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING_LEVEL` | | The logging level for SQLx. | `debug` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__CONNECT_LAZY` | | Whether to establish database connections lazily. | `false` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__SQLX_SLOW_STATEMENTS_LOGGING_LEVEL` | | The logging level for slow SQL statements. | `off` |
+| `TAC_OPERATION_LIFECYCLE__DATABASE__CONNECT_OPTIONS__SQLX_SLOW_STATEMENTS_LOGGING_THRESHOLD` | | The threshold (in seconds) for logging slow SQL statements. | `1` |
 
 [anchor]: <> (anchors.envs.end.service)
 

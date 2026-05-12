@@ -1,12 +1,15 @@
 use bens_logic::protocols::{AddressResolveTechnique, ProtocolMeta, ProtocolSpecific, Tld};
 use blockscout_service_launcher::{
-    database::{DatabaseConnectSettings, DatabaseSettings},
+    database::{
+        DatabaseConnectOptionsSettings, DatabaseConnectSettings, DatabaseSettings,
+        ReplicaDatabaseSettings,
+    },
     launcher::{ConfigSettings, MetricsSettings, ServerSettings},
     tracing::{JaegerSettings, TracingSettings},
 };
 use nonempty::NonEmpty;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -23,6 +26,10 @@ pub struct Settings {
     #[serde(default)]
     pub subgraphs_reader: SubgraphsReaderSettings,
     pub database: DatabaseSettings,
+    #[serde(default)]
+    pub replica_database: Option<ReplicaDatabaseSettings>,
+    #[serde(default = "default_swagger_path")]
+    pub swagger_path: PathBuf,
 }
 
 impl ConfigSettings for Settings {
@@ -38,6 +45,8 @@ pub struct SubgraphsReaderSettings {
     pub networks: HashMap<i64, NetworkSettings>,
     #[serde(default = "default_refresh_cache_schedule")]
     pub refresh_cache_schedule: String,
+    #[serde(default)]
+    pub refresh_cache_disabled: bool,
 }
 
 fn default_refresh_cache_schedule() -> String {
@@ -50,6 +59,7 @@ impl Default for SubgraphsReaderSettings {
             networks: Default::default(),
             protocols: Default::default(),
             refresh_cache_schedule: default_refresh_cache_schedule(),
+            refresh_cache_disabled: false,
         }
     }
 }
@@ -118,6 +128,10 @@ impl Default for BlockscoutSettings {
     }
 }
 
+fn default_swagger_path() -> PathBuf {
+    blockscout_endpoint_swagger::default_swagger_path_from_service_name("bens")
+}
+
 impl Settings {
     pub fn default(database_url: String) -> Self {
         Self {
@@ -128,10 +142,16 @@ impl Settings {
             subgraphs_reader: Default::default(),
             database: DatabaseSettings {
                 connect: DatabaseConnectSettings::Url(database_url),
-                connect_options: Default::default(),
+                connect_options: DatabaseConnectOptionsSettings {
+                    postgres_application_name: Some("BENS".into()),
+                    postgres_statement_timeout: Some("60s".into()),
+                    ..Default::default()
+                },
                 create_database: Default::default(),
                 run_migrations: Default::default(),
             },
+            replica_database: Default::default(),
+            swagger_path: default_swagger_path(),
         }
     }
 }

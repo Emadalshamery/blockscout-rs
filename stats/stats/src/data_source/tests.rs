@@ -12,41 +12,45 @@ use super::{
             resolutions::last_value::LastValueLowerResolution,
         },
         local_db::{
+            DailyCumulativeLocalDbChartSource, DirectVecLocalDbChartSource, LocalDbChartSource,
             parameters::{
+                DefaultCreate, DefaultQueryVec,
                 update::batching::{
+                    BatchUpdate,
                     parameter_traits::BatchStepBehaviour,
                     parameters::{Batch30Days, Batch30Weeks, Batch30Years, Batch36Months},
-                    BatchUpdate,
                 },
-                DefaultCreate, DefaultQueryVec,
             },
-            DailyCumulativeLocalDbChartSource, DirectVecLocalDbChartSource, LocalDbChartSource,
         },
-        remote_db::{PullAllWithAndSort, RemoteDatabaseSource, StatementFromRange},
+        remote_db::{
+            PullAllWithAndSort, RemoteDatabaseSource, StatementFromRange,
+            db_choice::{UsePrimaryDB, impl_db_choice},
+        },
     },
     types::UpdateParameters,
 };
 use crate::{
-    charts::db_interaction::read::QueryAllBlockTimestampRange,
+    ChartError, ChartKey, ChartProperties, MissingDatePolicy, Named,
+    charts::db_interaction::read::QueryFullIndexerTimestampRange,
     construct_update_group,
     data_source::{
         kinds::local_db::parameters::update::batching::parameters::PassVecStep,
-        types::BlockscoutMigrations,
+        types::IndexerMigrations,
     },
     define_and_impl_resolution_properties,
     tests::{init_db::init_db_all, mock_blockscout::fill_mock_blockscout_data},
     types::timespans::{DateValue, Month, Week, Year},
     update_group::{SyncUpdateGroup, UpdateGroup},
     utils::{produce_filter_and_values, sql_with_range_filter_opt},
-    ChartError, ChartKey, ChartProperties, MissingDatePolicy, Named,
 };
 
 pub struct NewContractsQuery;
+impl_db_choice!(NewContractsQuery, UsePrimaryDB);
 
 impl StatementFromRange for NewContractsQuery {
     fn get_statement(
         range: Option<Range<DateTime<Utc>>>,
-        completed_migrations: &BlockscoutMigrations,
+        completed_migrations: &IndexerMigrations,
         _enabled_update_charts_recursive: &HashSet<ChartKey>,
     ) -> Statement {
         // choose the statement based on migration progress
@@ -74,12 +78,13 @@ impl StatementFromRange for NewContractsQuery {
                                 t.block_timestamp != to_timestamp(0) {tx_filter}
                             UNION
                             SELECT
-                                it.created_contract_address_hash AS hash,
+                                ai.address_hash AS hash,
                                 b.timestamp::date AS day
                             FROM internal_transactions it
-                                JOIN blocks b ON b.hash = it.block_hash
+                                JOIN blocks b ON b.number = it.block_number
+                                JOIN address_ids_to_address_hashes ai ON ai.address_id = it.created_contract_address_id
                             WHERE
-                                it.created_contract_address_hash NOTNULL AND
+                                it.created_contract_address_id NOTNULL AND
                                 b.consensus = TRUE AND
                                 b.timestamp != to_timestamp(0) {block_filter}
                         ) txns_plus_internal_txns
@@ -109,12 +114,13 @@ impl StatementFromRange for NewContractsQuery {
                                 b.timestamp != to_timestamp(0) {filter}
                             UNION
                             SELECT
-                                it.created_contract_address_hash AS hash,
+                                ai.address_hash AS hash,
                                 b.timestamp::date AS day
                             FROM internal_transactions it
-                                JOIN blocks b ON b.hash = it.block_hash
+                                JOIN blocks b ON b.number = it.block_number
+                                JOIN address_ids_to_address_hashes ai ON ai.address_id = it.created_contract_address_id
                             WHERE
-                                it.created_contract_address_hash NOTNULL AND
+                                it.created_contract_address_id NOTNULL AND
                                 b.consensus = TRUE AND
                                 b.timestamp != to_timestamp(0) {filter}
                         ) txns_plus_internal_txns
@@ -130,7 +136,7 @@ impl StatementFromRange for NewContractsQuery {
 }
 
 pub type NewContractsRemote = RemoteDatabaseSource<
-    PullAllWithAndSort<NewContractsQuery, NaiveDate, String, QueryAllBlockTimestampRange>,
+    PullAllWithAndSort<NewContractsQuery, NaiveDate, String, QueryFullIndexerTimestampRange>,
 >;
 
 pub struct NewContractsChartProperties;
@@ -214,7 +220,7 @@ impl BatchStepBehaviour<NaiveDate, Vec<DateValue<String>>, ()>
         _db: &C,
         _chart_id: i32,
         _update_time: DateTime<Utc>,
-        _min_blockscout_block: i64,
+        _min_indexer_block: i64,
         _last_accurate_point: DateValue<String>,
         _main_data: Vec<DateValue<String>>,
         _resolution_data: (),
@@ -230,7 +236,7 @@ impl BatchStepBehaviour<NaiveDate, Vec<DateValue<String>>, ()>
             _db,
             _chart_id,
             _update_time,
-            _min_blockscout_block,
+            _min_indexer_block,
             _last_accurate_point,
             _main_data,
             _resolution_data,
@@ -295,14 +301,13 @@ async fn update_examples() {
     let group = SyncUpdateGroup::new(&mutexes, Arc::new(ExampleUpdateGroup)).unwrap();
     group.create_charts_sync(&db, None, &enabled).await.unwrap();
 
-    let parameters = UpdateParameters {
-        db: &db,
-        blockscout: &blockscout,
-        blockscout_applied_migrations: BlockscoutMigrations::latest(),
-        enabled_update_charts_recursive: group.enabled_members_with_deps(&enabled),
-        update_time_override: None,
-        force_full: true,
-    };
+    let parameters = UpdateParameters::default_test_parameters(
+        &db,
+        &blockscout,
+        group.enabled_members_with_deps(&enabled),
+        None,
+    )
+    .with_force_full();
     group
         .update_charts_sync(parameters, &enabled)
         .await

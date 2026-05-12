@@ -6,33 +6,38 @@ use blockscout_service_launcher::{
 };
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{DisplayFromStr, StringWithSeparator, formats::CommaSeparator, serde_as};
 use stats::{
+    ChartProperties,
     counters::{
         ArbitrumNewOperationalTxns24h, ArbitrumTotalOperationalTxns,
-        ArbitrumYesterdayOperationalTxns, OpStackNewOperationalTxns24h,
-        OpStackTotalOperationalTxns, OpStackYesterdayOperationalTxns,
+        ArbitrumYesterdayOperationalTxns, NewZetachainCrossChainTxns24h,
+        OpStackNewOperationalTxns24h, OpStackTotalOperationalTxns, OpStackYesterdayOperationalTxns,
+        PendingZetachainCrossChainTxns, TotalZetachainCrossChainTxns,
     },
     indexing_status::BlockscoutIndexingStatus,
     lines::{
         ArbitrumNewOperationalTxns, ArbitrumNewOperationalTxnsWindow,
         ArbitrumOperationalTxnsGrowth, Eip7702AuthsGrowth, NewEip7702Auths,
-        OpStackNewOperationalTxns, OpStackNewOperationalTxnsWindow, OpStackOperationalTxnsGrowth,
+        NewZetachainCrossChainTxns, OpStackNewOperationalTxns, OpStackNewOperationalTxnsWindow,
+        OpStackOperationalTxnsGrowth, ZetachainCrossChainTxnsGrowth,
     },
-    ChartProperties,
 };
 use std::{
     collections::{BTreeSet, HashMap},
     net::SocketAddr,
     path::PathBuf,
     str::FromStr,
+    time::Duration,
 };
 use tracing::warn;
 
 use crate::{
-    config::{self, types::AllChartSettings},
     RuntimeSetup,
+    config::{self, types::AllChartSettings},
 };
+
+pub use stats::Mode;
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -41,7 +46,23 @@ pub struct Settings {
     pub db_url: String,
     pub create_database: bool,
     pub run_migrations: bool,
-    pub blockscout_db_url: String,
+
+    /// Mode determines the type of the underlying database and feature flags that were
+    /// previously controlled by `enable_zetachain_cctx` and `multichain_mode`.
+    ///
+    /// The service can be run in one of the following modes:
+    /// - `Blockscout`: run the service for a single blockscout instance (default)
+    /// - `MultichainAggregator`: run the service for a multichain_aggregator
+    /// - `Zetachain`: run the service for a zetachain instance
+    /// - `Interchain`: run the service for a interchain indexer (aka Universal Bridge Indexer)
+    ///
+    /// Modes are mutually exclusive by design.
+    pub mode: Mode,
+
+    pub blockscout_db_url: Option<String>, // deprecated, use `indexer_db_url` instead
+    pub indexer_db_url: Option<String>,
+    /// Url for second db of indexer (currently assumed to be CCTX (cross chain transactions) indexer, see `zetachain-cctx` service)
+    pub second_indexer_db_url: Option<String>,
     /// Blockscout API url.
     ///
     /// Required. To launch without it api use [`Settings::ignore_blockscout_api_absence`].
@@ -60,6 +81,16 @@ pub struct Settings {
     pub enable_all_op_stack: bool,
     /// Enable EIP-7702 charts
     pub enable_all_eip_7702: bool,
+    /// Filter by chain ids for multichain mode.
+    /// TODO: recalculate statistics data when multichain_filter has been changed
+    ///       most likely it's need to implement in conjunction with 3D charts
+    #[serde_as(as = "Option<StringWithSeparator<CommaSeparator, u64>>")]
+    pub multichain_filter: Option<Vec<u64>>,
+    /// Set the primary chain_id for Interchain mode
+    /// If the primary chain set, send/receive counters and charts will be built around it
+    /// TODO: recalculate statistics data when interchain_primary_id has been changed
+    ///       most likely it's need to implement in conjunction with 3D charts
+    pub interchain_primary_id: Option<u64>,
     #[serde_as(as = "DisplayFromStr")]
     pub default_schedule: Schedule,
     pub force_update_on_start: Option<bool>, // None = no update
@@ -70,13 +101,65 @@ pub struct Settings {
     pub layout_config: PathBuf,
     pub update_groups_config: PathBuf,
     /// Location of swagger file to serve
-    pub swagger_file: PathBuf,
+    pub swagger_path: PathBuf,
+    /// Linked secondary stats settings. A client is created only when [`LinkedStatsSettings::base_url`]
+    /// is set; otherwise linked forwarding is disabled.
+    ///
+    /// Chaining linked services is technically allowed, but should be avoided unless
+    /// there is a strong operational reason for it.
+    pub linked_stats: LinkedStatsSettings,
     pub api_keys: HashMap<String, String>,
 
     pub server: ServerSettings,
     pub metrics: MetricsSettings,
     pub jaeger: JaegerSettings,
     pub tracing: TracingSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LinkedStatsSettings {
+    #[serde(default)]
+    pub base_url: Option<url::Url>,
+    #[serde(default = "default_linked_stats_timeout")]
+    pub timeout: u64,
+    /// Requested hop budget for linked requests. Values above the hard cap are truncated.
+    #[serde(default = "default_linked_stats_max_hops")]
+    pub max_hops: u32,
+}
+
+pub const LINKED_STATS_MAX_HOPS_HARD_CAP: u32 = 4;
+
+fn default_linked_stats_timeout() -> u64 {
+    3_000
+}
+
+fn default_linked_stats_max_hops() -> u32 {
+    1
+}
+
+impl Default for LinkedStatsSettings {
+    fn default() -> Self {
+        Self {
+            base_url: None,
+            timeout: default_linked_stats_timeout(),
+            max_hops: default_linked_stats_max_hops(),
+        }
+    }
+}
+
+impl LinkedStatsSettings {
+    pub fn timeout(&self) -> Duration {
+        Duration::from_millis(self.timeout)
+    }
+
+    pub fn max_hops(&self) -> u32 {
+        self.max_hops.min(LINKED_STATS_MAX_HOPS_HARD_CAP)
+    }
+}
+
+fn default_swagger_path() -> PathBuf {
+    blockscout_endpoint_swagger::default_swagger_path_from_service_name("stats")
 }
 
 impl Default for Settings {
@@ -97,22 +180,31 @@ impl Default for Settings {
             },
             api_keys: Default::default(),
             db_url: Default::default(),
+            mode: Mode::Blockscout,
             default_schedule: Schedule::from_str("0 0 1 * * * *").unwrap(),
             force_update_on_start: Some(false),
             concurrent_start_updates: 3,
             limits: Default::default(),
             conditional_start: Default::default(),
-            charts_config: PathBuf::from_str("config/charts.json").unwrap(),
-            layout_config: PathBuf::from_str("config/layout.json").unwrap(),
-            update_groups_config: PathBuf::from_str("config/update_groups.json").unwrap(),
-            swagger_file: PathBuf::from("../stats-proto/swagger/stats.swagger.yaml"),
+            charts_config: PathBuf::from_str("config/blockscout_instance/charts.json").unwrap(),
+            layout_config: PathBuf::from_str("config/blockscout_instance/layout.json").unwrap(),
+            update_groups_config: PathBuf::from_str(
+                "config/blockscout_instance/update_groups.json",
+            )
+            .unwrap(),
+            swagger_path: default_swagger_path(),
+            linked_stats: LinkedStatsSettings::default(),
             blockscout_db_url: Default::default(),
+            indexer_db_url: Default::default(),
+            second_indexer_db_url: Default::default(),
             blockscout_api_url: None,
             ignore_blockscout_api_absence: false,
             disable_internal_transactions: false,
             enable_all_arbitrum: false,
             enable_all_op_stack: false,
             enable_all_eip_7702: false,
+            multichain_filter: Default::default(),
+            interchain_primary_id: Default::default(),
             create_database: Default::default(),
             run_migrations: Default::default(),
             metrics: Default::default(),
@@ -244,6 +336,59 @@ pub fn handle_enable_all_eip_7702(
     }
 }
 
+pub fn apply_zetachain_cctx_mode_settings(
+    settings: &mut Settings,
+    charts: &mut config::charts::Config<AllChartSettings>,
+) {
+    enable_charts(
+        &[
+            NewZetachainCrossChainTxns::key().name(),
+            ZetachainCrossChainTxnsGrowth::key().name(),
+            NewZetachainCrossChainTxns24h::key().name(),
+            PendingZetachainCrossChainTxns::key().name(),
+            TotalZetachainCrossChainTxns::key().name(),
+        ],
+        charts,
+        "zetachain-cctx",
+    );
+    let check_enabled = &mut settings
+        .conditional_start
+        .zetachain_indexed_until_today
+        .enabled;
+    if check_enabled.is_none() {
+        *check_enabled = Some(true);
+    }
+}
+
+pub fn apply_multichain_mode_settings(settings: &mut Settings) {
+    settings.blockscout_api_url = None;
+    settings.ignore_blockscout_api_absence = true;
+    settings.conditional_start.blocks_ratio.enabled = false;
+    settings
+        .conditional_start
+        .internal_transactions_ratio
+        .enabled = false;
+    settings
+        .conditional_start
+        .user_ops_past_indexing_finished
+        .enabled = false;
+}
+
+/// Apply settings for Interchain mode (separate indexer DB, no blockscout API).
+pub fn apply_interchain_mode_settings(settings: &mut Settings) {
+    settings.blockscout_api_url = None;
+    settings.ignore_blockscout_api_absence = true;
+    settings.conditional_start.blocks_ratio.enabled = false;
+    settings
+        .conditional_start
+        .internal_transactions_ratio
+        .enabled = false;
+    settings
+        .conditional_start
+        .user_ops_past_indexing_finished
+        .enabled = false;
+}
+
 /// Various limits like rate limiting and restrictions on input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -271,6 +416,7 @@ pub struct StartConditionSettings {
     pub blocks_ratio: ToggleableThreshold,
     pub internal_transactions_ratio: ToggleableThreshold,
     pub user_ops_past_indexing_finished: ToggleableCheck,
+    pub zetachain_indexed_until_today: ToggleableOptionalCheck,
     pub check_period_secs: u32,
 }
 
@@ -281,6 +427,7 @@ impl Default for StartConditionSettings {
             blocks_ratio: ToggleableThreshold::default(),
             internal_transactions_ratio: ToggleableThreshold::default(),
             user_ops_past_indexing_finished: ToggleableCheck::default(),
+            zetachain_indexed_until_today: ToggleableOptionalCheck::default(),
             check_period_secs: 5,
         }
     }
@@ -292,6 +439,9 @@ impl StartConditionSettings {
     }
     pub fn user_ops_checks_enabled(&self) -> bool {
         self.user_ops_past_indexing_finished.enabled
+    }
+    pub fn zetachain_checks_enabled(&self) -> bool {
+        self.zetachain_indexed_until_today.enabled.unwrap_or(false)
     }
 }
 
@@ -344,6 +494,12 @@ impl Default for ToggleableCheck {
     fn default() -> Self {
         Self { enabled: true }
     }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToggleableOptionalCheck {
+    pub enabled: Option<bool>,
 }
 
 #[cfg(test)]
@@ -457,5 +613,47 @@ mod tests {
                 .enabled,
             true
         );
+    }
+
+    #[test]
+    fn linked_stats_without_base_url_deserializes() {
+        let settings: LinkedStatsSettings =
+            serde_json::from_str(r#"{"timeout": 10}"#).expect("valid config should deserialize");
+        assert!(settings.base_url.is_none());
+        assert_eq!(settings.timeout, 10);
+    }
+
+    #[test]
+    fn linked_stats_empty_object_deserializes_to_defaults() {
+        let settings: LinkedStatsSettings =
+            serde_json::from_str(r#"{}"#).expect("empty linked_stats should deserialize");
+        assert!(settings.base_url.is_none());
+        assert_eq!(settings.timeout, 3_000);
+        assert_eq!(settings.max_hops, 1);
+    }
+
+    #[test]
+    fn linked_stats_defaults_timeout_and_max_hops_when_base_url_is_set() {
+        let settings: LinkedStatsSettings =
+            serde_json::from_str(r#"{"base_url":"http://example.com"}"#)
+                .expect("valid linked_stats config should deserialize");
+
+        assert_eq!(
+            settings.base_url.as_ref().unwrap().as_str(),
+            "http://example.com/"
+        );
+        assert_eq!(settings.timeout, 3_000);
+        assert_eq!(settings.max_hops, 1);
+        assert_eq!(settings.max_hops(), 1);
+    }
+
+    #[test]
+    fn linked_stats_max_hops_is_capped_to_hard_limit() {
+        let settings: LinkedStatsSettings =
+            serde_json::from_str(r#"{"base_url":"http://example.com","max_hops":100}"#)
+                .expect("valid linked_stats config should deserialize");
+
+        assert_eq!(settings.max_hops, 100);
+        assert_eq!(settings.max_hops(), LINKED_STATS_MAX_HOPS_HARD_CAP);
     }
 }

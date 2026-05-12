@@ -43,10 +43,10 @@ use thiserror::Error;
 use tokio::sync::{Mutex, MutexGuard};
 
 use crate::{
-    charts::{chart_properties_portrait::imports::ChartKey, ChartObject},
+    ChartError,
+    charts::{ChartObject, chart_properties_portrait::imports::ChartKey},
     data_source::UpdateParameters,
     indexing_status::IndexingStatus,
-    ChartError,
 };
 
 #[derive(Error, Debug, PartialEq)]
@@ -218,32 +218,20 @@ pub trait UpdateGroup: core::fmt::Debug {
 /// ## Example
 ///
 /// ```rust
-/// # use stats::{
-/// #     QueryAllBlockTimestampRange, construct_update_group,
-/// #     types::timespans::DateValue, ChartProperties, Named, ChartError,
-/// #     ChartKey,
-/// # };
-/// # use stats::data_source::{
-/// #     kinds::{
-/// #         local_db::{DirectVecLocalDbChartSource, parameters::update::batching::parameters::Batch30Days},
-/// #         remote_db::{PullAllWithAndSort, RemoteDatabaseSource, StatementFromRange},
-/// #     },
-/// #     types::{UpdateContext, UpdateParameters, BlockscoutMigrations},
-/// # };
-/// # use chrono::{NaiveDate, DateTime, Utc};
-/// # use entity::sea_orm_active_enums::ChartType;
+/// # use stats::chart_prelude::*;
+/// # use stats::construct_update_group;
 /// # use std::{ops::Range, collections::HashSet};
-/// # use sea_orm::Statement;
 ///
 /// struct DummyRemoteStatement;
+/// impl_db_choice!(DummyRemoteStatement, UsePrimaryDB);
 ///
 /// impl StatementFromRange for DummyRemoteStatement {
-///     fn get_statement(range: Option<Range<DateTime<Utc>>>, _: &BlockscoutMigrations, _: &HashSet<ChartKey>) -> Statement {
+///     fn get_statement(range: Option<Range<DateTime<Utc>>>, _: &IndexerMigrations, _: &HashSet<ChartKey>) -> Statement {
 ///         todo!()
 ///     }
 /// }
 ///
-/// type DummyRemote = RemoteDatabaseSource<PullAllWithAndSort<DummyRemoteStatement, NaiveDate, String, QueryAllBlockTimestampRange>>;
+/// type DummyRemote = RemoteDatabaseSource<PullAllWithAndSort<DummyRemoteStatement, NaiveDate, String, QueryFullIndexerTimestampRange>>;
 ///
 /// struct DummyChartProperties;
 ///
@@ -515,7 +503,7 @@ impl SyncUpdateGroup {
         for id in charts {
             let Some(dependencies_ids) = self.inner.dependency_mutex_ids_of(id) else {
                 tracing::warn!(
-                    update_group=self.name(),
+                    update_group = self.name(),
                     "`dependency_mutex_ids_of` of member chart '{id}' returned `None`. Expected `Some(..)`"
                 );
                 continue;
@@ -525,7 +513,7 @@ impl SyncUpdateGroup {
         result
     }
 
-    async fn lock_in_order(&self, mut to_lock: HashSet<String>) -> Vec<MutexGuard<()>> {
+    async fn lock_in_order(&self, mut to_lock: HashSet<String>) -> Vec<MutexGuard<'_, ()>> {
         let mut guards = vec![];
         // .iter() is ordered by key, so order is followed
         for (name, mutex) in self.dependencies_mutexes.iter() {
@@ -582,7 +570,7 @@ impl SyncUpdateGroup {
     async fn lock_enabled_and_dependencies(
         &self,
         enabled_charts: &HashSet<ChartKey>,
-    ) -> ChartsMutexGuards {
+    ) -> ChartsMutexGuards<'_> {
         let (enabled_members, enabled_members_with_deps) =
             self.get_enabled_members_with_deps(enabled_charts);
         // order is very important to prevent deadlocks
@@ -661,7 +649,7 @@ impl SyncUpdateGroup {
         for id in enabled_charts {
             let Some(dependencies_ids) = self.inner.dependency_keys_of(id) else {
                 tracing::warn!(
-                    update_group=self.name(),
+                    update_group = self.name(),
                     "`dependency_mutex_ids_of` of member chart '{id}' returned `None`. Expected `Some(..)`"
                 );
                 continue;

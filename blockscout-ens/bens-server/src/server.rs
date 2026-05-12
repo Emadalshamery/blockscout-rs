@@ -1,6 +1,9 @@
 use crate::{
     jobs,
-    services::{domain_extractor::DomainsExtractorService, health::HealthService},
+    services::{
+        domain_extractor::DomainsExtractorService, health::HealthService,
+        multichain_domains::MultichainDomainsService,
+    },
     settings::Settings,
 };
 use anyhow::Context;
@@ -12,11 +15,12 @@ use bens_logic::{
 use bens_proto::blockscout::bens::v1::{
     domains_extractor_actix::route_domains_extractor,
     domains_extractor_server::DomainsExtractorServer, health_actix::route_health,
-    health_server::HealthServer,
+    health_server::HealthServer, multichain_domains_actix::route_multichain_domains,
+    multichain_domains_server::MultichainDomainsServer,
 };
-use blockscout_service_launcher::{launcher, launcher::LaunchSettings};
-use sqlx::{postgres::PgPoolOptions, Executor};
-use std::{collections::HashMap, sync::Arc};
+use blockscout_endpoint_swagger::route_swagger;
+use blockscout_service_launcher::{database::ReadWriteRepo, launcher, launcher::LaunchSettings};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio_cron_scheduler::JobScheduler;
 
 const SERVICE_NAME: &str = "bens";
@@ -24,7 +28,9 @@ const SERVICE_NAME: &str = "bens";
 #[derive(Clone)]
 struct Router {
     domains_extractor: Arc<DomainsExtractorService>,
+    multichain_domains: Arc<MultichainDomainsService>,
     health: Arc<HealthService>,
+    swagger_path: PathBuf,
 }
 
 impl Router {
@@ -34,6 +40,9 @@ impl Router {
             .add_service(DomainsExtractorServer::from_arc(
                 self.domains_extractor.clone(),
             ))
+            .add_service(MultichainDomainsServer::from_arc(
+                self.multichain_domains.clone(),
+            ))
     }
 }
 
@@ -42,6 +51,15 @@ impl launcher::HttpRouter for Router {
         service_config.configure(|config| route_health(config, self.health.clone()));
         service_config
             .configure(|config| route_domains_extractor(config, self.domains_extractor.clone()));
+        service_config
+            .configure(|config| route_multichain_domains(config, self.multichain_domains.clone()));
+        service_config.configure(|config| {
+            route_swagger(
+                config,
+                self.swagger_path.clone(),
+                "/api/v1/docs/swagger.yaml",
+            )
+        });
     }
 }
 
@@ -54,40 +72,14 @@ pub async fn run(settings: Settings) -> Result<(), anyhow::Error> {
 
     let health = Arc::new(HealthService::default());
 
-    let database_url = settings.database.connect.url();
-    let pool = Arc::new(
-        PgPoolOptions::new()
-            .max_connections(
-                settings
-                    .database
-                    .connect_options
-                    .max_connections
-                    .unwrap_or(40),
-            )
-            .min_connections(
-                settings
-                    .database
-                    .connect_options
-                    .min_connections
-                    .unwrap_or(1),
-            )
-            .idle_timeout(settings.database.connect_options.idle_timeout)
-            .max_lifetime(settings.database.connect_options.max_lifetime)
-            .after_connect(|conn, _meta| {
-                Box::pin(async move {
-                    conn.execute(format!("SET application_name = '{}';", SERVICE_NAME).as_str())
-                        .await?;
-                    conn.execute("SET statement_timeout = '60s';").await?;
-                    Ok(())
-                })
-            })
-            .connect(&database_url)
+    let db_repo = Arc::new(
+        ReadWriteRepo::new_no_migrations(&settings.database, settings.replica_database.as_ref())
             .await
-            .context("database connect")?,
+            .context("database read/write repo")?,
     );
     if settings.database.run_migrations {
         tracing::info!("running migrations");
-        bens_logic::migrations::run(&pool).await?;
+        bens_logic::migrations::run(db_repo.main_db().get_postgres_connection_pool()).await?;
     }
     let networks = settings
         .subgraphs_reader
@@ -102,6 +94,7 @@ pub async fn run(settings: Settings) -> Result<(), anyhow::Error> {
             (
                 id,
                 Network {
+                    network_id: id,
                     blockscout_client,
                     use_protocols: network.use_protocols,
                     rpc_url: network.rpc_url,
@@ -142,25 +135,34 @@ pub async fn run(settings: Settings) -> Result<(), anyhow::Error> {
         protocols.keys().collect::<Vec<_>>()
     );
 
-    let subgraph_reader = SubgraphReader::initialize(pool, networks, protocols)
+    let subgraph_reader = SubgraphReader::initialize(db_repo.clone(), networks, protocols)
         .await
         .context("failed to initialize subgraph-reader")?;
     let subgraph_reader = Arc::new(subgraph_reader);
     let domains_extractor = Arc::new(DomainsExtractorService::new(subgraph_reader.clone()));
+    let multichain_domains = Arc::new(MultichainDomainsService::new(subgraph_reader.clone()));
 
     let scheduler = JobScheduler::new().await?;
-    scheduler
-        .add(jobs::refresh_cache_job(
-            &settings.subgraphs_reader.refresh_cache_schedule,
-            subgraph_reader.clone(),
-        )?)
-        .await?;
+
+    if !settings.subgraphs_reader.refresh_cache_disabled {
+        tracing::info!("adding refresh cache job to scheduler");
+        scheduler
+            .add(jobs::refresh_cache_job(
+                &settings.subgraphs_reader.refresh_cache_schedule,
+                subgraph_reader.clone(),
+            )?)
+            .await?;
+    } else {
+        tracing::info!("refresh cache job is disabled, skipping");
+    }
     tracing::info!("starting job scheduler");
     scheduler.start().await?;
 
     let router = Router {
         domains_extractor,
+        multichain_domains,
         health,
+        swagger_path: settings.swagger_path,
     };
 
     let grpc_router = router.grpc_router();

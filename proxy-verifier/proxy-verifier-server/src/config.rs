@@ -37,7 +37,7 @@ impl ChainsSettings {
         self.0
     }
 
-    pub fn insertion_iter(&self) -> indexmap::map::Iter<String, ChainSettings> {
+    pub fn insertion_iter(&self) -> indexmap::map::Iter<'_, String, ChainSettings> {
         self.inner().get_range(..).unwrap().iter()
     }
 
@@ -65,4 +65,6 @@ pub struct ChainSettings {
     pub api_url: url::Url,
     pub icon_url: Option<url::Url>,
     pub sensitive_api_key: Option<String>,
+    #[serde(default)]
+    pub is_testnet: bool,
 }

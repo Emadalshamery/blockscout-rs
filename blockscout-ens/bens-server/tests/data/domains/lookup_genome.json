@@ -1,8 +1,8 @@
 [
   {
-    "expiry_date": "2025-03-18T06:17:27.000Z",
-    "id": "0x6635ff2e6ba5d52ca5fa237e7e9f766bd73089f99ac49f49ba88ca61b8fbb168",
-    "name": "zeshitcoinwebdev.gno",
+    "expiry_date": null,
+    "id": "0xefc07af2d64eead3daec2e3004575bfc86bfc43c34e316294bd01c957e70cba2",
+    "name": "abcnews.gno",
     "owner": {
       "hash": "0xb1b38CEDf091714916Bc01BC4B96674b1bacdC10"
     },

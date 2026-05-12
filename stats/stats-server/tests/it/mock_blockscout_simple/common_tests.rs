@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use blockscout_service_launcher::test_server::send_get_request;
 use pretty_assertions::assert_eq;
-use stats::{lines::NEW_TXNS_WINDOW_RANGE, ResolutionKind};
+use stats::{ResolutionKind, lines::NEW_TXNS_WINDOW_RANGE};
 use stats_proto::blockscout::stats::v1::{
     ContractsPageStats, Counters, MainPageStats, TransactionsPageStats,
 };
@@ -17,7 +17,12 @@ use crate::{
     common::{enabled_resolutions, sorted_vec},
 };
 
-pub async fn test_lines_ok(base: Url, blockscout_indexed: bool, user_ops_indexed: bool) {
+pub async fn test_lines_ok(
+    base: Url,
+    blockscout_indexed: bool,
+    user_ops_indexed: bool,
+    zetachain_indexed: bool,
+) {
     let line_charts: stats_proto::blockscout::stats::v1::LineCharts =
         send_get_request(&base, "/api/v1/lines").await;
 
@@ -89,6 +94,12 @@ pub async fn test_lines_ok(base: Url, blockscout_indexed: bool, user_ops_indexed
             "activePaymasters",
         ]);
     }
+    if zetachain_indexed {
+        expected_lines.extend([
+            "newZetachainCrossChainTxns",
+            "zetachainCrossChainTxnsGrowth",
+        ]);
+    }
 
     for line_name in expected_lines {
         let line_resolutions = enabled_resolutions
@@ -97,7 +108,8 @@ pub async fn test_lines_ok(base: Url, blockscout_indexed: bool, user_ops_indexed
         assert!(
             line_resolutions.contains(&ResolutionKind::Day.into()),
             "At least day resolution must be enabled for enabled chart `{}`. Enabled resolutions: {:?}",
-            &line_name, line_resolutions
+            &line_name,
+            line_resolutions
         );
         for resolution in line_resolutions {
             let chart: serde_json::Value = send_get_request(
@@ -137,7 +149,12 @@ pub async fn test_lines_ok(base: Url, blockscout_indexed: bool, user_ops_indexed
     assert_eq!(enabled_resolutions, HashMap::new());
 }
 
-pub async fn test_counters_ok(base: Url, blockscout_indexed: bool, user_ops_indexed: bool) {
+pub async fn test_counters_ok(
+    base: Url,
+    blockscout_indexed: bool,
+    user_ops_indexed: bool,
+    zetachain_indexed: bool,
+) {
     let counters: Counters = send_get_request(&base, "/api/v1/counters").await;
     for counter in counters.counters.iter() {
         assert!(!counter.description.is_empty());
@@ -197,6 +214,13 @@ pub async fn test_counters_ok(base: Url, blockscout_indexed: bool, user_ops_inde
         expected_counter_names.extend(["totalUserOps", "totalAccountAbstractionWallets"]);
     }
 
+    if zetachain_indexed {
+        expected_counter_names.extend([
+            "totalZetachainCrossChainTxns",
+            "newZetachainCrossChainTxns24h",
+            "pendingZetachainCrossChainTxns",
+        ]);
+    }
     assert_eq!(
         sorted_vec(counter_names),
         sorted_vec(expected_counter_names)
@@ -241,7 +265,7 @@ pub async fn test_main_page_ok(base: Url, expect_chain_specific: bool, blockscou
     }
     for (name, counter) in counters {
         let counter =
-            counter.unwrap_or_else(|| panic!("main page counter {} must be available", name));
+            counter.unwrap_or_else(|| panic!("main page counter {name} must be available"));
         assert!(!counter.description.is_empty());
         assert!(!counter.title.is_empty());
     }
@@ -254,8 +278,7 @@ pub async fn test_main_page_ok(base: Url, expect_chain_specific: bool, blockscou
         ]));
     }
     for (name, window_chart) in window_line_charts {
-        let window_chart =
-            window_chart.unwrap_or_else(|| panic!("{} chart must be available", name));
+        let window_chart = window_chart.unwrap_or_else(|| panic!("{name} chart must be available"));
         let transactions_info = window_chart.info.unwrap();
         assert!(!transactions_info.id.is_empty());
         assert_eq!(transactions_info.resolutions, vec!["DAY"]);
@@ -263,7 +286,11 @@ pub async fn test_main_page_ok(base: Url, expect_chain_specific: bool, blockscou
     }
 }
 
-pub async fn test_transactions_page_ok(base: Url, expect_chain_specific: bool) {
+pub async fn test_transactions_page_ok(
+    base: Url,
+    expect_chain_specific: bool,
+    zetachain_indexed: bool,
+) {
     let TransactionsPageStats {
         pending_transactions_30m,
         transactions_fee_24h,
@@ -271,6 +298,9 @@ pub async fn test_transactions_page_ok(base: Url, expect_chain_specific: bool) {
         transactions_24h,
         operational_transactions_24h,
         op_stack_operational_transactions_24h,
+        total_zetachain_cross_chain_txns,
+        new_zetachain_cross_chain_txns_24h,
+        pending_zetachain_cross_chain_txns,
     } = send_get_request(&base, "/api/v1/pages/transactions").await;
     let mut counters = array_of_variables_with_names!([
         pending_transactions_30m,
@@ -282,12 +312,19 @@ pub async fn test_transactions_page_ok(base: Url, expect_chain_specific: bool) {
     if expect_chain_specific {
         counters.extend(array_of_variables_with_names!([
             operational_transactions_24h,
-            op_stack_operational_transactions_24h
+            op_stack_operational_transactions_24h,
         ]));
+        if zetachain_indexed {
+            counters.extend(array_of_variables_with_names!([
+                total_zetachain_cross_chain_txns,
+                new_zetachain_cross_chain_txns_24h,
+                pending_zetachain_cross_chain_txns,
+            ]));
+        }
     }
     for (name, counter) in counters {
-        let counter = counter
-            .unwrap_or_else(|| panic!("transactions page counter {} must be available", name));
+        let counter =
+            counter.unwrap_or_else(|| panic!("transactions page counter {name} must be available"));
         assert!(!counter.description.is_empty());
         assert!(!counter.title.is_empty());
     }
@@ -308,7 +345,7 @@ pub async fn test_contracts_page_ok(base: Url) {
     ]);
     for (name, counter) in counters {
         let counter =
-            counter.unwrap_or_else(|| panic!("contracts page counter {} must be available", name));
+            counter.unwrap_or_else(|| panic!("contracts page counter {name} must be available"));
         assert!(!counter.description.is_empty());
         assert!(!counter.title.is_empty());
     }

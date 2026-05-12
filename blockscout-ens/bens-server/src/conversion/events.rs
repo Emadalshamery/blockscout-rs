@@ -1,3 +1,4 @@
+use super::{address_from_logic, order_direction_from_inner, ConversionError};
 use bens_logic::{
     entity::subgraph::domain_event::DomainEvent,
     hex,
@@ -5,15 +6,13 @@ use bens_logic::{
 };
 use bens_proto::blockscout::bens::v1 as proto;
 
-use super::{address_from_logic, order_direction_from_inner, ConversionError};
-
 pub fn list_domain_events_from_inner(
     inner: proto::ListDomainEventsRequest,
 ) -> Result<GetDomainHistoryInput, ConversionError> {
     let sort = event_sort_from_inner(&inner.sort)?;
     let order = order_direction_from_inner(inner.order());
     Ok(GetDomainHistoryInput {
-        network_id: inner.chain_id,
+        network_id: Some(inner.chain_id),
         name: inner.name,
         sort,
         order,
@@ -23,9 +22,13 @@ pub fn list_domain_events_from_inner(
 
 pub fn event_from_logic(
     e: DomainEvent,
-    chain_id: i64,
+    chain_id: Option<i64>,
 ) -> Result<proto::DomainEvent, ConversionError> {
-    let from_address = Some(address_from_logic(&e.from_address, chain_id));
+    let from_address = Some(address_from_logic(
+        &e.from_address,
+        chain_id,
+        e.from_address_ens_domain_name,
+    ));
     Ok(proto::DomainEvent {
         transaction_hash: hex(e.transaction_hash),
         timestamp: e.timestamp,

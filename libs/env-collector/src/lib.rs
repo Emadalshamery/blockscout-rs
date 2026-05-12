@@ -1,4 +1,5 @@
 use anyhow::Context;
+use clap::Parser;
 use config::{Config, File};
 use itertools::{Either, Itertools};
 use json_dotpath::DotPaths;
@@ -12,48 +13,78 @@ use std::{
 
 const ANCHOR_START: &str = "anchors.envs.start";
 const ANCHOR_END: &str = "anchors.envs.end";
-const VALIDATE_ONLY_ENV: &str = "VALIDATE_ONLY";
 
-pub fn run_env_collector_cli<S: Serialize + DeserializeOwned>(
+mod types;
+pub use types::*;
+
+#[deprecated(since = "0.2.0", note = "use run_env_collector_cli instead")]
+pub fn run_env_collector_cli_old<S: Serialize + DeserializeOwned>(
     service_name: &str,
     markdown_path: &str,
     config_path: &str,
     vars_filter: PrefixFilter,
     anchor_postfix: Option<&str>,
 ) {
+    let settings = EnvCollectorSettingsBuilder::default()
+        .service_name(service_name.to_string())
+        .markdown_path(markdown_path)
+        .config_path(config_path)
+        .vars_filter(vars_filter)
+        .anchor_postfix(anchor_postfix.map(|s| s.to_string()))
+        .build()
+        .expect("wrong settings");
+    run_env_collector_cli::<S>(settings);
+}
+
+pub fn run_env_collector_cli<S: Serialize + DeserializeOwned>(settings: EnvCollectorSettings) {
     let collector = EnvCollector::<S>::new(
-        service_name.to_string(),
-        markdown_path.into(),
-        config_path.into(),
-        vars_filter,
-        anchor_postfix.map(|s| s.to_string()),
+        settings.service_name,
+        settings.markdown_path.clone(),
+        settings.config_path,
+        settings.vars_filter,
+        settings.anchor_postfix,
+        settings.format_markdown,
     );
-    let validate_only = std::env::var(VALIDATE_ONLY_ENV)
-        .unwrap_or_default()
-        .to_lowercase()
-        .eq("true");
-    let missing = collector
-        .find_missing()
-        .expect("Failed to find missing variables");
-    if missing.is_empty() {
-        println!("All variables are documented");
+    let options = EnvCollectorOptions::parse();
+    let incorrect = collector
+        .verify_markdown(&options)
+        .expect("Failed to find incorrect variables");
+    if incorrect.is_empty() {
+        println!("All variables are documented correctly");
     } else {
-        println!("Found missing variables:");
-        for env in missing {
-            println!("  {}", env.key);
+        println!("Found incorrect variables:");
+        for env in incorrect {
+            println!("({})\t{}", env.tag(), env.inner().key);
         }
 
-        if validate_only {
+        if options.validate_only {
             std::process::exit(1);
         } else {
-            println!("Ready to update markdown file: {}", markdown_path);
+            println!(
+                "Ready to update markdown file: {:?}",
+                settings.markdown_path
+            );
             println!("Press any key to continue...");
             std::io::stdin().read_line(&mut String::new()).unwrap();
             collector
-                .update_markdown()
+                .update_markdown(&options)
                 .expect("Failed to update markdown");
         }
     }
+}
+
+#[derive(Parser, Debug, Default)]
+#[command(version, about, long_about = None)]
+pub struct EnvCollectorOptions {
+    /// Only validate the markdown file, do not update it
+    #[arg(long)]
+    validate_only: bool,
+    /// Skip default values when validating and updating markdown
+    #[arg(long)]
+    ignore_defaults: bool,
+    /// Do not remove variables from the markdown file absent in the config
+    #[arg(long)]
+    ignore_unused: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +94,7 @@ pub struct EnvCollector<S> {
     config_path: PathBuf,
     vars_filter: PrefixFilter,
     anchor_postfix: Option<String>,
+    format_markdown: bool,
 
     settings: PhantomData<S>,
 }
@@ -77,6 +109,7 @@ where
         config_path: PathBuf,
         vars_filter: PrefixFilter,
         anchor_postfix: Option<String>,
+        format_markdown: bool,
     ) -> Self {
         Self {
             service_name,
@@ -84,59 +117,65 @@ where
             config_path,
             vars_filter,
             anchor_postfix,
+            format_markdown,
             settings: Default::default(),
         }
     }
 
-    pub fn find_missing(&self) -> Result<Vec<EnvVariable>, anyhow::Error> {
-        find_missing_variables_in_markdown::<S>(
+    pub fn verify_markdown(
+        &self,
+        options: &EnvCollectorOptions,
+    ) -> Result<Vec<ReportedVariable>, anyhow::Error> {
+        find_mistakes_in_markdown::<S>(
             &self.service_name,
             self.markdown_path.as_path(),
             self.config_path.as_path(),
             self.vars_filter.clone(),
             self.anchor_postfix.clone(),
+            options,
         )
     }
 
-    pub fn update_markdown(&self) -> Result<(), anyhow::Error> {
+    pub fn update_markdown(&self, options: &EnvCollectorOptions) -> Result<(), anyhow::Error> {
         update_markdown_file::<S>(
             &self.service_name,
             self.markdown_path.as_path(),
             self.config_path.as_path(),
             self.vars_filter.clone(),
             self.anchor_postfix.clone(),
+            self.format_markdown,
+            options,
         )
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum PrefixFilter {
-    Whitelist(Vec<String>),
-    Blacklist(Vec<String>),
-    Empty,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReportedVariable {
+    /// The variable is missing or some of its fields are incorrect
+    Incorrect(EnvVariable),
+    /// The variable is present in the markdown, but not in the config
+    Unused(EnvVariable),
 }
 
-impl PrefixFilter {
-    pub fn whitelist(allow_only: &[&str]) -> Self {
-        let list = allow_only.iter().map(|s| s.to_string()).collect();
-        Self::Whitelist(list)
-    }
-
-    pub fn blacklist(vars_filter: &[&str]) -> Self {
-        let list = vars_filter.iter().map(|s| s.to_string()).collect();
-        Self::Blacklist(list)
-    }
-
-    pub fn filter(&self, string: &str) -> bool {
-        let list = match self {
-            PrefixFilter::Whitelist(list) | PrefixFilter::Blacklist(list) => list,
-            PrefixFilter::Empty => &vec![],
-        };
-        let input_matches_some_prefix = list.iter().any(|prefix| string.starts_with(prefix));
+impl ReportedVariable {
+    pub fn inner(&self) -> &EnvVariable {
         match self {
-            PrefixFilter::Whitelist(_) => input_matches_some_prefix,
-            PrefixFilter::Blacklist(_) => !input_matches_some_prefix,
-            PrefixFilter::Empty => true,
+            ReportedVariable::Incorrect(var) => var,
+            ReportedVariable::Unused(var) => var,
+        }
+    }
+
+    pub fn into_inner(self) -> EnvVariable {
+        match self {
+            ReportedVariable::Incorrect(var) => var,
+            ReportedVariable::Unused(var) => var,
+        }
+    }
+
+    pub fn tag(&self) -> &'static str {
+        match self {
+            ReportedVariable::Incorrect(_) => "incorrect",
+            ReportedVariable::Unused(_) => "unused",
         }
     }
 }
@@ -159,8 +198,15 @@ impl EnvVariable {
         filter_non_ascii(lhs) == filter_non_ascii(rhs)
     }
 
-    pub fn eq_with_ignores(&self, other: &Self) -> bool {
-        Self::strings_equal_in_ascii(&self.key, &other.key) && self.required == other.required
+    pub fn eq_with_ignores(&self, other: &Self, ignore_defaults: bool) -> bool {
+        let are_defaults_equal = if ignore_defaults {
+            true
+        } else {
+            self.default_value == other.default_value
+        };
+        Self::strings_equal_in_ascii(&self.key, &other.key)
+            && self.required == other.required
+            && are_defaults_equal
     }
 }
 
@@ -265,10 +311,18 @@ impl Envs {
         Ok(result)
     }
 
-    pub fn update_no_override(&mut self, other: Envs) {
+    pub fn update_no_override(&mut self, other: Envs, ignore_defaults: bool) {
         for (id, value) in other.vars {
-            self.vars.entry(id).or_insert(value);
+            let entry = self.vars.entry(id).or_insert(value.clone());
+            if !ignore_defaults {
+                entry.default_value = value.default_value;
+            }
+            entry.required = value.required;
         }
+    }
+
+    pub fn remove_unused_envs(&mut self, used: &Envs) {
+        self.vars.retain(|id, _| used.vars.contains_key(id));
     }
 
     /// Preserve order of variables with `table_index`, sort others alphabetically
@@ -299,13 +353,14 @@ impl Envs {
     }
 }
 
-fn find_missing_variables_in_markdown<S>(
+fn find_mistakes_in_markdown<S>(
     service_name: &str,
     markdown_path: &Path,
     config_path: &Path,
     vars_filter: PrefixFilter,
     anchor_postfix: Option<String>,
-) -> Result<Vec<EnvVariable>, anyhow::Error>
+    options: &EnvCollectorOptions,
+) -> Result<Vec<ReportedVariable>, anyhow::Error>
 where
     S: Serialize + DeserializeOwned,
 {
@@ -323,19 +378,27 @@ where
         anchor_postfix,
     )?;
 
-    let missing = example
+    let mut incorrect: Vec<_> = example
         .vars
         .iter()
         .filter(|(id, value)| {
             let maybe_markdown_var = markdown.vars.get(*id);
             maybe_markdown_var
-                .map(|var| !var.eq_with_ignores(value))
+                .map(|var| !var.eq_with_ignores(value, options.ignore_defaults))
                 .unwrap_or(true)
         })
-        .map(|(_, value)| value.clone())
+        .map(|(_, value)| ReportedVariable::Incorrect(value.clone()))
         .collect();
 
-    Ok(missing)
+    if !options.ignore_unused {
+        let unused = markdown
+            .vars
+            .iter()
+            .filter(|(id, _)| !example.vars.contains_key(id.as_str()));
+        incorrect.extend(unused.map(|(_, value)| ReportedVariable::Unused(value.clone())));
+    }
+
+    Ok(incorrect)
 }
 
 fn update_markdown_file<S>(
@@ -344,6 +407,8 @@ fn update_markdown_file<S>(
     config_path: &Path,
     vars_filter: PrefixFilter,
     anchor_postfix: Option<String>,
+    format_markdown: bool,
+    options: &EnvCollectorOptions,
 ) -> Result<(), anyhow::Error>
 where
     S: Serialize + DeserializeOwned,
@@ -361,8 +426,11 @@ where
             .as_str(),
         anchor_postfix.clone(),
     )?;
-    markdown_config.update_no_override(from_config);
-    let table = serialize_env_vars_to_md_table(markdown_config);
+    if !options.ignore_unused {
+        markdown_config.remove_unused_envs(&from_config);
+    }
+    markdown_config.update_no_override(from_config, options.ignore_defaults);
+    let table = serialize_env_vars_to_md_table(markdown_config, format_markdown);
 
     let content = std::fs::read_to_string(markdown_path).context("failed to read markdown file")?;
     let lines = content.lines().collect::<Vec<&str>>();
@@ -416,7 +484,7 @@ fn try_get_description(_key: &str, value: &str, default: &Option<serde_json::Val
         return Default::default();
     }
 
-    format!("e.g. `{}`", value)
+    format!("e.g. `{value}`")
 }
 
 fn from_key_to_json_path(key: &str, service_prefix: &str) -> String {
@@ -426,7 +494,7 @@ fn from_key_to_json_path(key: &str, service_prefix: &str) -> String {
         .to_string()
 }
 
-fn serialize_env_vars_to_md_table(vars: Envs) -> String {
+fn serialize_env_vars_to_md_table(vars: Envs, format_markdown: bool) -> String {
     // zero-width spaces in "Required" so that
     // the word can be broken down and
     // its colum doesn't take unnecessary space
@@ -453,7 +521,11 @@ fn serialize_env_vars_to_md_table(vars: Envs) -> String {
             env.key, required, description, default_value,
         ));
     }
-    result
+    if format_markdown {
+        markdown_table_formatter::format_tables(&result)
+    } else {
+        result
+    }
 }
 
 fn push_postfix_to_anchor(anchor: &str, postfix: Option<String>) -> String {
@@ -486,7 +558,12 @@ fn json_value_to_env_value(json: &Value) -> String {
         Value::Number(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Null => "null".to_string(),
-        _ => panic!("unsupported value type: {:?}", json),
+        Value::Array(v) => v
+            .iter()
+            .map(json_value_to_env_value)
+            .collect::<Vec<String>>()
+            .join(","),
+        _ => panic!("unsupported value type: {json:?}"),
     }
 }
 
@@ -497,7 +574,7 @@ fn _flat_json(json: &Value, prefix: &str, env_vars: &mut BTreeMap<String, String
                 let new_prefix = if prefix.is_empty() {
                     key.to_string()
                 } else {
-                    format!("{}__{}", prefix, key)
+                    format!("{prefix}__{key}")
                 };
                 _flat_json(value, &new_prefix, env_vars);
             }
@@ -516,29 +593,7 @@ mod tests {
     use blockscout_service_launcher::database::DatabaseSettings;
     use pretty_assertions::assert_eq;
     use serde::Deserialize;
-    use std::io::Write;
-
-    #[test]
-    fn filter_works() {
-        let list = vec!["LOL", "KEK__"];
-        let blacklist = PrefixFilter::blacklist(&list);
-        assert!(!blacklist.filter("LOL"));
-        assert!(!blacklist.filter("LOL_KEK"));
-        assert!(blacklist.filter("KEK"));
-        assert!(blacklist.filter("KEK_"));
-        assert!(!blacklist.filter("KEK__"));
-        assert!(!blacklist.filter("KEK__KKEKEKEKEK"));
-        assert!(blacklist.filter("hesoyam"));
-
-        let whitelist = PrefixFilter::whitelist(&list);
-        assert!(whitelist.filter("LOL"));
-        assert!(whitelist.filter("LOL_KEK"));
-        assert!(!whitelist.filter("KEK"));
-        assert!(!whitelist.filter("KEK_"));
-        assert!(whitelist.filter("KEK__"));
-        assert!(whitelist.filter("KEK__KKEKEKEKEK"));
-        assert!(!whitelist.filter("hesoyam"));
-    }
+    use std::{collections::HashSet, io::Write};
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
     struct TestSettings {
@@ -582,7 +637,7 @@ mod tests {
 
     fn tempfile_with_content(content: &str, format: &str) -> tempfile::NamedTempFile {
         let mut file = tempfile::Builder::new().suffix(format).tempfile().unwrap();
-        writeln!(file, "{}", content).unwrap();
+        writeln!(file, "{content}").unwrap();
         file
     }
 
@@ -694,6 +749,18 @@ mod tests {
                 "",
             ),
             var(
+                "TEST_SERVICE__DATABASE__CONNECT_OPTIONS__POSTGRES_APPLICATION_NAME",
+                Some("`null`"),
+                false,
+                "",
+            ),
+            var(
+                "TEST_SERVICE__DATABASE__CONNECT_OPTIONS__POSTGRES_STATEMENT_TIMEOUT",
+                Some("`null`"),
+                false,
+                "",
+            ),
+            var(
                 "TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING",
                 Some("`true`"),
                 false,
@@ -746,6 +813,8 @@ mod tests {
 | `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__MAX_CONNECTIONS` | | | `null` |
 | `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__MAX_LIFETIME` | | | `null` |
 | `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__MIN_CONNECTIONS` | | | `null` |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__POSTGRES_APPLICATION_NAME` | | | `null` |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__POSTGRES_STATEMENT_TIMEOUT` | | | `null` |
 | `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING` | | | `true` |
 | `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING_LEVEL` | | | `debug` |
 | `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_SLOW_STATEMENTS_LOGGING_LEVEL` | | | `off` |
@@ -816,11 +885,22 @@ mod tests {
             config.path().to_path_buf(),
             PrefixFilter::Empty,
             None,
+            true,
         );
+        let options = EnvCollectorOptions {
+            ignore_unused: true,
+            ..Default::default()
+        };
 
-        let missing = collector.find_missing().unwrap();
+        let incorrect = collector
+            .verify_markdown(&options)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.into_inner())
+            .collect::<Vec<_>>();
+
         assert_eq!(
-            missing,
+            incorrect,
             default_envs()
                 .vars
                 .values()
@@ -829,9 +909,9 @@ mod tests {
                 .collect::<Vec<EnvVariable>>()
         );
 
-        collector.update_markdown().unwrap();
-        let missing = collector.find_missing().unwrap();
-        assert_eq!(missing, vec![]);
+        collector.update_markdown(&options).unwrap();
+        let incorrect = collector.verify_markdown(&options).unwrap();
+        assert_eq!(incorrect, vec![]);
 
         let markdown_content = std::fs::read_to_string(markdown.path()).unwrap();
         assert_eq!(
@@ -839,30 +919,179 @@ mod tests {
             r#"
 [anchor]: <> (anchors.envs.start)
 
-| Variable | Req&#x200B;uir&#x200B;ed | Description | Default value |
-| --- | --- | --- | --- |
-| `TEST_SERVICE__TEST5_WITH_UNICODE♡♡♡` | | the variable should be matched with `TEST_SERVICE__TEST5_WITH_UNICODE` and the unicode must be saved | `false` |
-| `SOME_EXTRA_VARS` | | comment should be saved. `kek` | `example_value` |
-| `SOME_EXTRA_VARS2` | true | | `example_value2` |
-| `TEST_SERVICE__DATABASE__CONNECT__URL` | true | e.g. `test-url` | |
-| `TEST_SERVICE__TEST` | true | e.g. `value` | |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__ACQUIRE_TIMEOUT` | | | `null` |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__CONNECT_LAZY` | | | `false` |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__CONNECT_TIMEOUT` | | | `null` |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__IDLE_TIMEOUT` | | | `null` |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__MAX_CONNECTIONS` | | | `null` |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__MAX_LIFETIME` | | | `null` |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__MIN_CONNECTIONS` | | | `null` |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING` | | | `true` |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING_LEVEL` | | | `debug` |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_SLOW_STATEMENTS_LOGGING_LEVEL` | | | `off` |
-| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_SLOW_STATEMENTS_LOGGING_THRESHOLD` | | | `1` |
-| `TEST_SERVICE__DATABASE__CREATE_DATABASE` | | | `false` |
-| `TEST_SERVICE__DATABASE__RUN_MIGRATIONS` | | | `false` |
-| `TEST_SERVICE__STRING_WITH_DEFAULT` | | | `kekek` |
-| `TEST_SERVICE__TEST2` | | e.g. `123` | `1000` |
-| `TEST_SERVICE__TEST3_SET` | | e.g. `false` | `null` |
-| `TEST_SERVICE__TEST4_NOT_SET` | | | `null` |
+| Variable                                                                          | Req&#x200B;uir&#x200B;ed | Description                                                                                          | Default value    |
+| --------------------------------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------- | ---------------- |
+| `TEST_SERVICE__TEST5_WITH_UNICODE♡♡♡`                                             |                          | the variable should be matched with `TEST_SERVICE__TEST5_WITH_UNICODE` and the unicode must be saved | `false`          |
+| `SOME_EXTRA_VARS`                                                                 |                          | comment should be saved. `kek`                                                                       | `example_value`  |
+| `SOME_EXTRA_VARS2`                                                                | true                     |                                                                                                      | `example_value2` |
+| `TEST_SERVICE__DATABASE__CONNECT__URL`                                            | true                     | e.g. `test-url`                                                                                      |                  |
+| `TEST_SERVICE__TEST`                                                              | true                     | e.g. `value`                                                                                         |                  |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__ACQUIRE_TIMEOUT`                        |                          |                                                                                                      | `null`           |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__CONNECT_LAZY`                           |                          |                                                                                                      | `false`          |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__CONNECT_TIMEOUT`                        |                          |                                                                                                      | `null`           |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__IDLE_TIMEOUT`                           |                          |                                                                                                      | `null`           |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__MAX_CONNECTIONS`                        |                          |                                                                                                      | `null`           |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__MAX_LIFETIME`                           |                          |                                                                                                      | `null`           |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__MIN_CONNECTIONS`                        |                          |                                                                                                      | `null`           |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__POSTGRES_APPLICATION_NAME`              |                          |                                                                                                      | `null`           |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__POSTGRES_STATEMENT_TIMEOUT`             |                          |                                                                                                      | `null`           |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING`                           |                          |                                                                                                      | `true`           |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_LOGGING_LEVEL`                     |                          |                                                                                                      | `debug`          |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_SLOW_STATEMENTS_LOGGING_LEVEL`     |                          |                                                                                                      | `off`            |
+| `TEST_SERVICE__DATABASE__CONNECT_OPTIONS__SQLX_SLOW_STATEMENTS_LOGGING_THRESHOLD` |                          |                                                                                                      | `1`              |
+| `TEST_SERVICE__DATABASE__CREATE_DATABASE`                                         |                          |                                                                                                      | `false`          |
+| `TEST_SERVICE__DATABASE__RUN_MIGRATIONS`                                          |                          |                                                                                                      | `false`          |
+| `TEST_SERVICE__STRING_WITH_DEFAULT`                                               |                          |                                                                                                      | `kekek`          |
+| `TEST_SERVICE__TEST2`                                                             |                          | e.g. `123`                                                                                           | `1000`           |
+| `TEST_SERVICE__TEST3_SET`                                                         |                          | e.g. `false`                                                                                         | `null`           |
+| `TEST_SERVICE__TEST4_NOT_SET`                                                     |                          |                                                                                                      | `null`           |
+
+[anchor]: <> (anchors.envs.end)
+"#
+        );
+    }
+
+    #[test]
+    fn override_defaults_works() {
+        let mut markdown = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            markdown,
+            r#"
+[anchor]: <> (anchors.envs.start)
+| `TEST_SERVICE__TEST5_WITH_UNICODE`  |                          | aboba         | `false`          |
+| `TEST_SERVICE__TEST`                | true                     | e.g. `value`  |                  |
+| `TEST_SERVICE__STRING_WITH_DEFAULT` |                          |               | `old_default`    |
+[anchor]: <> (anchors.envs.end)
+"#
+        )
+        .unwrap();
+
+        let config = default_config_example_file_toml();
+
+        let collector = EnvCollector::<TestSettings>::new(
+            "TEST_SERVICE".to_string(),
+            markdown.path().to_path_buf(),
+            config.path().to_path_buf(),
+            PrefixFilter::blacklist(&["TEST_SERVICE__DATABASE"]),
+            None,
+            true,
+        );
+        let options = EnvCollectorOptions::default();
+
+        let incorrect = collector
+            .verify_markdown(&options)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.into_inner())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            incorrect,
+            default_envs()
+                .vars
+                .values()
+                .filter(|var| var.key != "TEST_SERVICE__TEST"
+                    && var.key != "TEST_SERVICE__TEST5_WITH_UNICODE"
+                    // `STRING_WITH_DEFAULT` has wrong default, so it's reported as incorrect
+                    && !var.key.starts_with("TEST_SERVICE__DATABASE"))
+                .map(Clone::clone)
+                .collect::<Vec<EnvVariable>>()
+        );
+
+        collector.update_markdown(&options).unwrap();
+        let incorrect = collector.verify_markdown(&options).unwrap();
+        assert_eq!(incorrect, vec![]);
+
+        let markdown_content = std::fs::read_to_string(markdown.path()).unwrap();
+        // check that default for `TEST_SERVICE__STRING_WITH_DEFAULT` is updated, as requested
+        assert_eq!(
+            markdown_content,
+            r#"
+[anchor]: <> (anchors.envs.start)
+
+| Variable                            | Req&#x200B;uir&#x200B;ed | Description  | Default value |
+| ----------------------------------- | ------------------------ | ------------ | ------------- |
+| `TEST_SERVICE__TEST5_WITH_UNICODE`  |                          | aboba        | `false`       |
+| `TEST_SERVICE__TEST`                | true                     | e.g. `value` |               |
+| `TEST_SERVICE__STRING_WITH_DEFAULT` |                          |              | `kekek`       |
+| `TEST_SERVICE__TEST2`               |                          | e.g. `123`   | `1000`        |
+| `TEST_SERVICE__TEST3_SET`           |                          | e.g. `false` | `null`        |
+| `TEST_SERVICE__TEST4_NOT_SET`       |                          |              | `null`        |
+
+[anchor]: <> (anchors.envs.end)
+"#
+        );
+    }
+
+    #[test]
+    fn remove_unused_works() {
+        let mut markdown = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            markdown,
+            r#"
+[anchor]: <> (anchors.envs.start)
+| `SOME_EXTRA_VARS`                   |      | comment should be saved. `kek` | `example_value`  |
+| `SOME_EXTRA_VARS2`                  | true |                                | `example_value2` |
+| `TEST_SERVICE__TEST5_WITH_UNICODE`  |      | aboba                          | `false`          |
+| `TEST_SERVICE__TEST`                | true | e.g. `value`                   |                  |
+| `TEST_SERVICE__STRING_WITH_DEFAULT` |      |                                | `kekek`          |
+| `TEST_SERVICE__TEST2`               |      | e.g. `123`                     | `1000`           |
+| `TEST_SERVICE__TEST3_SET`           |      | e.g. `false`                   | `null`           |
+| `TEST_SERVICE__TEST4_NOT_SET`       |      |                                | `null`           |
+[anchor]: <> (anchors.envs.end)
+"#
+        )
+        .unwrap();
+
+        let config = default_config_example_file_toml();
+
+        let collector = EnvCollector::<TestSettings>::new(
+            "TEST_SERVICE".to_string(),
+            markdown.path().to_path_buf(),
+            config.path().to_path_buf(),
+            PrefixFilter::blacklist(&["TEST_SERVICE__DATABASE"]),
+            None,
+            true,
+        );
+        let options = EnvCollectorOptions::default();
+
+        let incorrect = collector.verify_markdown(&options).unwrap();
+        let mut expected_unused_keys = HashSet::from(["SOME_EXTRA_VARS", "SOME_EXTRA_VARS2"]);
+        for reported in incorrect {
+            match reported {
+                ReportedVariable::Incorrect(env_variable) => {
+                    panic!("must not have incorrect variables, got: {env_variable:?}")
+                }
+                ReportedVariable::Unused(env_variable) => {
+                    assert!(
+                        expected_unused_keys.remove(env_variable.key.as_str()),
+                        "reported unused variable that was not expected: {env_variable:?}"
+                    );
+                }
+            }
+        }
+        assert!(
+            expected_unused_keys.is_empty(),
+            "did not report these unused variables: {expected_unused_keys:?}"
+        );
+
+        collector.update_markdown(&options).unwrap();
+        let incorrect = collector.verify_markdown(&options).unwrap();
+        assert_eq!(incorrect, vec![]);
+
+        let markdown_content = std::fs::read_to_string(markdown.path()).unwrap();
+        assert_eq!(
+            markdown_content,
+            r#"
+[anchor]: <> (anchors.envs.start)
+
+| Variable                            | Req&#x200B;uir&#x200B;ed | Description  | Default value |
+| ----------------------------------- | ------------------------ | ------------ | ------------- |
+| `TEST_SERVICE__TEST5_WITH_UNICODE`  |                          | aboba        | `false`       |
+| `TEST_SERVICE__TEST`                | true                     | e.g. `value` |               |
+| `TEST_SERVICE__STRING_WITH_DEFAULT` |                          |              | `kekek`       |
+| `TEST_SERVICE__TEST2`               |                          | e.g. `123`   | `1000`        |
+| `TEST_SERVICE__TEST3_SET`           |                          | e.g. `false` | `null`        |
+| `TEST_SERVICE__TEST4_NOT_SET`       |                          |              | `null`        |
 
 [anchor]: <> (anchors.envs.end)
 "#

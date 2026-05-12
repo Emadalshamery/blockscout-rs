@@ -13,22 +13,22 @@
 //!
 
 use crate::{
+    ReadService,
     config::{
         self,
         types::{AllChartSettings, EnabledChartSettings, LineChartCategory},
     },
-    ReadService,
 };
 use cron::Schedule;
 use itertools::Itertools;
 use stats::{
+    ChartKey, ChartObject, IndexingStatus, ResolutionKind,
     entity::sea_orm_active_enums::ChartType,
     query_dispatch::ChartTypeSpecifics,
     update_group::{ArcUpdateGroup, SyncUpdateGroup},
-    ChartKey, ChartObject, IndexingStatus, ResolutionKind,
 };
 use std::{
-    collections::{btree_map::Entry, BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, btree_map::Entry, hash_map},
     sync::Arc,
 };
 use tokio::sync::Mutex;
@@ -101,6 +101,19 @@ pub struct UpdateGroupEntry {
     pub group: SyncUpdateGroup,
     /// Members that are enabled in the charts config
     pub enabled_members: HashSet<ChartKey>,
+}
+
+impl UpdateGroupEntry {
+    pub fn should_skip_update(&self) -> bool {
+        let should = self.enabled_members.is_empty();
+        if should {
+            tracing::info!(
+                "update group {} does not have enabled members; should skip update",
+                self.group.name()
+            );
+        }
+        should
+    }
 }
 
 pub struct RuntimeSetup {
@@ -285,6 +298,8 @@ impl RuntimeSetup {
         // pages
         let charts_in_pages = [
             ReadService::main_page_charts(),
+            ReadService::main_page_multichain_charts(),
+            ReadService::main_page_interchain_charts(),
             ReadService::contracts_page_charts(),
             ReadService::transactions_page_charts(),
         ]
@@ -303,11 +318,12 @@ impl RuntimeSetup {
     }
 
     fn all_update_groups() -> Vec<ArcUpdateGroup> {
-        use stats::update_groups::*;
+        use stats::{update_groups::*, update_groups_interchain::*, update_groups_multichain::*};
 
         vec![
             // actual singletons
             Arc::new(ActiveAccountsGroup),
+            Arc::new(ActiveAccountsWeeklyGroup),
             Arc::new(ActiveBundlersGroup),
             Arc::new(ActivePaymastersGroup),
             Arc::new(ActiveAccountAbstractionWalletsGroup),
@@ -356,6 +372,33 @@ impl RuntimeSetup {
             Arc::new(TxnsStats24hGroup),
             Arc::new(NewBuilderAccountsGroup),
             Arc::new(VerifiedContractsPageGroup),
+            // zetachain cross chain txns
+            Arc::new(ZetachainCrossChainTxnsGroup),
+            // multichain: singletons
+            Arc::new(TotalInteropMessagesGroup),
+            Arc::new(TotalInteropTransfersGroup),
+            Arc::new(TotalMultichainAddressesGroup),
+            Arc::new(TotalMultichainTxnsGroup),
+            Arc::new(YesterdayTxnsMultichainGroup),
+            // multichain: groups
+            Arc::new(NewTxnsMultichainGroup),
+            Arc::new(NewTxnsMultichainWindowGroup),
+            Arc::new(TxnsGrowthMultichainGroup),
+            Arc::new(AccountsGrowthMultichainGroup),
+            // interchain
+            Arc::new(TotalInterchainMessagesGroup),
+            Arc::new(TotalInterchainMessagesReceivedGroup),
+            Arc::new(TotalInterchainMessagesSentGroup),
+            Arc::new(NewMessagesInterchainGroup),
+            Arc::new(NewMessagesSentInterchainGroup),
+            Arc::new(NewMessagesReceivedInterchainGroup),
+            Arc::new(TotalInterchainTransfersGroup),
+            Arc::new(TotalInterchainTransfersReceivedGroup),
+            Arc::new(TotalInterchainTransfersSentGroup),
+            Arc::new(TotalInterchainTransferUsersGroup),
+            Arc::new(NewTransfersInterchainGroup),
+            Arc::new(NewTransfersSentInterchainGroup),
+            Arc::new(NewTransfersReceivedInterchainGroup),
         ]
     }
 
@@ -425,6 +468,17 @@ impl RuntimeSetup {
             // compute, therefore this solution is ok (to not introduce
             // more update groups if not necessary)
             ("NewBlocksGroup", vec!["newTxns_DAY"]),
+            // They have their own group + doesn't make sense to update
+            // the dependency if `networkUtilization` is disabled
+            (
+                "NewBlocksGroup",
+                vec![
+                    "averageGasLimit_DAY",
+                    "averageGasLimit_WEEK",
+                    "averageGasLimit_MONTH",
+                    "averageGasLimit_YEAR",
+                ],
+            ),
             // Same logic as above
             ("TotalBlocksGroup", vec!["totalTxns_DAY"]),
         ]
@@ -434,7 +488,19 @@ impl RuntimeSetup {
                 allowed_missing.into_iter().map(|s| s.to_string()).collect(),
             )
         })
-        .into();
+        .into_iter()
+        // combine sets for the same key (group name)
+        .fold(HashMap::new(), |mut acc, (group_name, allowed_missing)| {
+            match acc.entry(group_name) {
+                hash_map::Entry::Vacant(v) => {
+                    v.insert(allowed_missing);
+                }
+                hash_map::Entry::Occupied(mut o) => {
+                    o.get_mut().extend(allowed_missing);
+                }
+            }
+            acc
+        });
 
         for (name, group) in groups {
             let sync_dependencies: HashSet<String> = group
@@ -461,7 +527,8 @@ impl RuntimeSetup {
                     update_group = name,
                     "Group has dependencies that are not members. In most scenarios it makes sense to include all dependencies, \
                     because all deps are updated with the group in any case. Turning off their 'parents' may lead to these members \
-                    getting stalled: {:?}", missing_members
+                    getting stalled: {:?}",
+                    missing_members
                 )
             }
         }

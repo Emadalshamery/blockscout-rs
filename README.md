@@ -21,6 +21,9 @@
 <a href="https://github.com/blockscout/blockscout-rs/actions/workflows/stats.yml">
    <img src="https://img.shields.io/github/actions/workflow/status/blockscout/blockscout-rs/stats.yml?branch=main&label=stats&logo=github&style=flat-square"><!--
 --></a>
+<a href="https://github.com/blockscout/blockscout-rs/actions/workflows/tac-operation-lifecycle.yml">
+   <img src="https://img.shields.io/github/actions/workflow/status/blockscout/blockscout-rs/tac-operation-lifecycle.yml?branch=main&label=tac-operation-lifecycle&logo=github&style=flat-square"><!--
+--></a>
 <a href="https://github.com/blockscout/blockscout-rs/actions/workflows/user-ops-indexer.yml">
    <img src="https://img.shields.io/github/actions/workflow/status/blockscout/blockscout-rs/user-ops-indexer.yml?branch=main&label=user-ops-indexer&logo=github&style=flat-square"><!--
 --></a>
@@ -45,18 +48,26 @@ A set of services used by [Blockscout](https://blockscout.com/) blockchain explo
 
 3. [eth-bytecode-db](eth-bytecode-db/) - Ethereum Bytecode Database. Cross-chain smart-contracts database used for automatic contracts verification
 
-4. [proxy-verifier](proxy-verifier) - backend for the standalone multi-chain verification service
+4. [interchain-indexer](interchain-indexer/) - Universal Bridge Indexer. A standalone service for indexing and aggregating interoperability data across multiple blockchains
 
-5. [sig-provider](sig-provider/) - aggregator of ethereum signatures for transactions and events
+5. [proxy-verifier](proxy-verifier) - backend for the standalone multi-chain verification service
 
-6. [smart-contract-verifier](smart-contract-verifier/) - smart-contracts verification
+6. [sig-provider](sig-provider/) - aggregator of ethereum signatures for transactions and events
 
-7. [stats](stats) - service designed to calculate and present statistical information from a Blockscout instance
+7. [smart-contract-verifier](smart-contract-verifier/) - smart-contracts verification
 
-8. [user-ops-indexer](user-ops-indexer) - service designed to index, decode and serve user operations as per the ERC-4337 standard
+8. [stats](stats) - service designed to calculate and present statistical information from a Blockscout instance
 
-9. [visualizer](visualizer/) - service for evm visualization such as:
-   1. Solidity contract visualization using [sol2uml](https://www.npmjs.com/package/sol2uml)
+9. [tac-operation-lifecycle](tac-operation-lifecycle/) - indexing operations in TAC (Ton Application Chain)
+
+10. [user-ops-indexer](user-ops-indexer) - service designed to index, decode and serve user operations as per the ERC-4337 standard
+
+11. [visualizer](visualizer/) - service for evm visualization such as:
+   
+   * Solidity contract visualization using [sol2uml](https://www.npmjs.com/package/sol2uml)
+
+12. [multichain-aggregator](multichain-aggregator/) - service to store and index data from multiple blockscout instances. Also contains logic with [interop messages](https://docs.optimism.io/interop/message-passing)
+
 
 ## Running and configuring services
 

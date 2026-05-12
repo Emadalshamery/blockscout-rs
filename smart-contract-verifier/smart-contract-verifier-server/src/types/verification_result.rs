@@ -11,6 +11,7 @@ use verification_common::{
     verifier_alliance::{CborAuxdata, CompilationArtifacts, Match},
 };
 
+#[allow(clippy::result_large_err)]
 pub fn process_error(error: Error) -> Result<v2::VerifyResponse, Status> {
     match error {
         err @ Error::CompilerNotFound(_) => Err(Status::invalid_argument(err.to_string())),
@@ -35,6 +36,7 @@ pub fn process_error(error: Error) -> Result<v2::VerifyResponse, Status> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub fn process_verification_result(
     value: VerificationResult,
 ) -> Result<v2::VerifyResponse, Status> {
@@ -49,10 +51,42 @@ pub fn process_verification_result(
         return Ok(response);
     }
 
-    let verifying_contract = value.into_iter().next().unwrap();
+    let mut full_creation_and_runtime_match = None;
+    let mut full_creation_only_match = None;
+    let mut full_runtime_only_match = None;
+    for verifying_contract in &value {
+        match (
+            &verifying_contract.creation_match,
+            &verifying_contract.runtime_match,
+        ) {
+            (Some(creation_match), Some(runtime_match))
+                if creation_match.metadata_match && runtime_match.metadata_match =>
+            {
+                full_creation_and_runtime_match = Some(verifying_contract)
+            }
+            (Some(creation_match), _) if creation_match.metadata_match => {
+                full_creation_only_match = Some(verifying_contract)
+            }
+            (_, Some(runtime_match)) if runtime_match.metadata_match => {
+                full_runtime_only_match = Some(verifying_contract)
+            }
+            _ => {}
+        }
+    }
 
-    let extra_data = into_extra_data(&verifying_contract);
-    let source = try_into_source(verifying_contract)?;
+    let verifying_contract = match (
+        full_creation_and_runtime_match,
+        full_creation_only_match,
+        full_runtime_only_match,
+    ) {
+        (Some(full_creation_and_runtime_match), _, _) => full_creation_and_runtime_match,
+        (None, Some(full_creation_only_match), _) => full_creation_only_match,
+        (None, None, Some(full_runtime_only_match)) => full_runtime_only_match,
+        _ => value.first().unwrap(),
+    };
+
+    let extra_data = into_extra_data(verifying_contract);
+    let source = try_into_source(verifying_contract.clone())?;
 
     let response = v2::VerifyResponse {
         message: "OK".to_string(),
@@ -118,6 +152,7 @@ fn new_bytecode_part(type_: &str, data: &[u8]) -> extra_data::BytecodePart {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn try_into_source(verifying_contract: VerifyingContract) -> Result<v2::Source, Status> {
     let compilation_artifacts = verifying_contract.compilation_artifacts;
     let creation_code_artifacts = verifying_contract.creation_code_artifacts;
@@ -185,6 +220,7 @@ fn parse_constructor_arguments(creation_match: &Option<Match>) -> Option<String>
         .map(|value| value.to_hex())
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_match_type(
     creation_match: &Option<Match>,
     runtime_match: &Option<Match>,

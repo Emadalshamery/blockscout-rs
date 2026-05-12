@@ -3,7 +3,9 @@ use entity::chart_data;
 
 use sea_orm::{DbErr, FromQueryResult, QueryResult, Set, TryGetable};
 
-use super::{timespans::DateValue, TimespanValue};
+use crate::{chart_prelude::Week, types::Timespan};
+
+use super::{TimespanValue, timespans::DateValue};
 
 // Separate type instead of `TimespanValue` just to derive `FromQueryResult`
 /// Internal (database) representation of data points.
@@ -29,7 +31,7 @@ impl DbDateValue<String> {
     pub fn active_model(
         &self,
         chart_id: i32,
-        min_blockscout_block: Option<i64>,
+        min_indexer_block: Option<i64>,
     ) -> chart_data::ActiveModel {
         chart_data::ActiveModel {
             id: Default::default(),
@@ -37,7 +39,7 @@ impl DbDateValue<String> {
             date: Set(self.date),
             value: Set(self.value.clone()),
             created_at: Default::default(),
-            min_blockscout_block: Set(min_blockscout_block),
+            min_blockscout_block: Set(min_indexer_block),
         }
     }
 }
@@ -45,5 +47,14 @@ impl DbDateValue<String> {
 impl<V: TryGetable> FromQueryResult for TimespanValue<NaiveDate, V> {
     fn from_query_result(res: &QueryResult, pre: &str) -> Result<Self, DbErr> {
         DbDateValue::<V>::from_query_result(res, pre).map(|dv| dv.into())
+    }
+}
+
+impl<V: TryGetable> FromQueryResult for TimespanValue<Week, V> {
+    fn from_query_result(res: &QueryResult, pre: &str) -> Result<Self, DbErr> {
+        DbDateValue::<V>::from_query_result(res, pre).map(|dv| TimespanValue {
+            timespan: Week::from_date(dv.date),
+            value: dv.value,
+        })
     }
 }

@@ -27,6 +27,20 @@
         ],
         "rpc_url": "https://www.shibrpc.com"
       },
+      "1868": {
+        "blockscout": {
+          "url": "https://soneium.blockscout.com/"
+        },
+        "use_protocols": ["ens", "infinityname-soneium"]
+      },
+      "130": {
+        "blockscout": {
+          "url": "https://unichain.blockscout.com"
+        },
+        "use_protocols": [
+          "zns-unichain"
+        ]
+      },
       "157": {
         "blockscout": {
           "url": "https://puppyscan.shib.io/"
@@ -42,6 +56,14 @@
         },
         "use_protocols": [
           "gravity"
+        ]
+      },
+      "8453": {
+        "blockscout": {
+          "url": "https://base.blockscout.com"
+        },
+        "use_protocols": [
+          "infinityname-base"
         ]
       },
       "33111": {
@@ -227,7 +249,61 @@
           "icon_url": "https://i.imgur.com/yYc2C6V.png",
           "docs_url": "https://docs.space.id/"
         }
+      },
+      "zns-unichain": {
+        "disabled": true,
+        "tld_list": ["defi"],
+        "network_id": 130,
+        "subgraph_name": "zns-unichain-subgraph",
+        "address_resolve_technique": "all_domains",
+        "specific": {
+          "type": "ens_like"
+        },
+        "meta": {
+          "short_name": "ZNS",
+          "title": "ZNS Connect Domains",
+          "description": "ZNS is a decentralized naming system designed to simplify Web3 by offering user-friendly and memorable domain names",
+          "icon_url": "https://i.imgur.com/Vx1jUlA.png",
+          "docs_url": "https://docs.znsconnect.io/"
+        }
+      },
+      "infinityname-base": {
+        "disabled": true,
+        "tld_list": ["blue"],
+        "network_id": 8453,
+        "subgraph_name": "infinityname-base-subgraph",
+        "address_resolve_technique": "primary_name_record",
+        "specific": {
+          "type": "infinity_name",
+          "main_contract": "0x86f6d95E688A5953074C0aBCb0d9d930837E528E"
+        },
+        "meta": {
+          "short_name": "InfinityName",
+          "title": "InfinityName",
+          "description": "InfinityName is a decentralized naming service giving users permanent ownership of their domain names",
+          "icon_url": "https://infinityname.com/img/InfinityName-logo.png",
+          "docs_url": "https://infinityname.com/"
+        }
+      },
+      "infinityname-soneium": {
+        "disabled": true,
+        "tld_list": ["cd"],
+        "network_id": 1868,
+        "subgraph_name": "infinityname-soneium-subgraph",
+        "address_resolve_technique": "primary_name_record",
+        "specific": {
+          "type": "infinity_name",
+          "main_contract": "0x86f6d95E688A5953074C0aBCb0d9d930837E528E"
+        },
+        "meta": {
+          "short_name": "InfinityName",
+          "title": "InfinityName",
+          "description": "InfinityName is a decentralized naming service giving users permanent ownership of their domain names",
+          "icon_url": "https://infinityname.com/img/InfinityName-logo.png",
+          "docs_url": "https://infinityname.com/documentation"
+        }
       }
     }
   }
 }
+

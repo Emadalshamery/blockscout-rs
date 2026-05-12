@@ -87,7 +87,8 @@ owner,
 registrant,
 wrapped_owner,
 to_timestamp(expiry_date) as expiry_date,
-COALESCE(to_timestamp(expiry_date) < now(), false) AS is_expired
+COALESCE(to_timestamp(expiry_date) < now(), false) AS is_expired,
+token_id::text as token_id
 "#;
 
 const DOMAIN_DEFAULT_SELECT_CLAUSE: &str = r#"
@@ -126,7 +127,7 @@ pub const DOMAIN_NOT_EXPIRED_WHERE_CLAUSE: &str = r#"
     err(level = "error"),
     level = "info",
     fields(
-        domain_name = %domain_name.inner.name,
+        domain_name = %domain_name.inner.name(),
         protocol_slug = %domain_name.deployed_protocol.protocol.info.slug)
     )
 ]
@@ -135,9 +136,11 @@ pub async fn get_domain(
     domain_name: &DomainNameOnProtocol<'_>,
     only_active: bool,
 ) -> Result<Option<DetailedDomain>, DbErr> {
-    let only_active_clause = only_active
-        .then(|| format!("AND {DOMAIN_NOT_EXPIRED_WHERE_CLAUSE}"))
-        .unwrap_or_default();
+    let only_active_clause = if only_active {
+        format!("AND {DOMAIN_NOT_EXPIRED_WHERE_CLAUSE}")
+    } else {
+        String::new()
+    };
     let schema = &domain_name.deployed_protocol.protocol.subgraph_schema;
     let protocol_slug = &domain_name.deployed_protocol.protocol.info.slug;
     let maybe_domain = sqlx::query_as(&format!(
@@ -169,7 +172,7 @@ pub async fn get_domain(
         {only_active_clause}
         ;"#,
     ))
-    .bind(&domain_name.inner.id)
+    .bind(domain_name.inner.id())
     .fetch_optional(pool)
     .await?;
     Ok(maybe_domain)
@@ -236,7 +239,7 @@ pub async fn find_domains(
     let mut query = sqlx::query_as(&sql);
     tracing::debug!(sql = sql, "build SQL query for 'find_domains'");
     if let FindDomainsInput::Names(names) = &input {
-        query = query.bind(names.iter().map(|n| n.inner.id.clone()).collect::<Vec<_>>());
+        query = query.bind(names.iter().map(|n| n.inner.id()).collect::<Vec<_>>());
     }
     let domains = query.fetch_all(pool).await?;
     Ok(domains)

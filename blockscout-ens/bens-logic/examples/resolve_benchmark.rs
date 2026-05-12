@@ -5,8 +5,10 @@ use bens_logic::{
     protocols::{Network, ProtocolInfo, Tld},
     subgraph::{BatchResolveAddressNamesInput, SubgraphReader},
 };
+use blockscout_service_launcher::database::{
+    DatabaseConnectSettings, DatabaseSettings, ReadWriteRepo,
+};
 use nonempty::nonempty;
-use sqlx::postgres::PgPoolOptions;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -23,12 +25,13 @@ async fn main() -> Result<(), anyhow::Error> {
         .init();
 
     let url = std::env::var("DATABASE_URL").expect("no database url");
-    let pool = Arc::new(
-        PgPoolOptions::new()
-            .max_connections(40)
-            .connect(&url)
-            .await?,
-    );
+    let settings = DatabaseSettings {
+        connect: DatabaseConnectSettings::Url(url),
+        connect_options: Default::default(),
+        create_database: false,
+        run_migrations: false,
+    };
+    let db = Arc::new(ReadWriteRepo::new_no_migrations(&settings, None).await?);
     let eth_client = BlockscoutClient::new("https://eth.blockscout.com".parse().unwrap(), 5, 30);
     let rootstock_client =
         BlockscoutClient::new("https://rootstock.blockscout.com".parse().unwrap(), 5, 30);
@@ -36,6 +39,7 @@ async fn main() -> Result<(), anyhow::Error> {
         (
             1,
             Network {
+                network_id: 1,
                 blockscout_client: Arc::new(eth_client),
                 use_protocols: vec!["ens".to_string()],
                 rpc_url: None,
@@ -44,6 +48,7 @@ async fn main() -> Result<(), anyhow::Error> {
         (
             30,
             Network {
+                network_id: 30,
                 blockscout_client: Arc::new(rootstock_client),
                 use_protocols: vec!["rns".to_string()],
                 rpc_url: None,
@@ -70,7 +75,7 @@ async fn main() -> Result<(), anyhow::Error> {
             },
         ),
     ]);
-    let reader = SubgraphReader::initialize(pool.clone(), networks, protocol_infos).await?;
+    let reader = SubgraphReader::initialize(db, networks, protocol_infos).await?;
 
     let addresses = vec![
         "0x0292f204513eeafe8c032ffc4cb4c7e10eca908c",
@@ -175,8 +180,9 @@ async fn main() -> Result<(), anyhow::Error> {
     let now = Instant::now();
     let result = reader
         .batch_resolve_address_names(BatchResolveAddressNamesInput {
-            network_id: 1,
             addresses,
+            network_id: Some(1),
+            protocols: None,
         })
         .await
         .expect("failed to quick resolve");

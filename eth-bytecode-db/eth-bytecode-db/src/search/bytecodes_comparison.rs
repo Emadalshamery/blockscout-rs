@@ -75,6 +75,7 @@ impl LocalBytecode {
     }
 }
 
+#[allow(clippy::result_large_err)]
 #[derive(Error, Clone, Debug, PartialEq, Eq)]
 pub enum CompareError {
     #[error("bytecode length is less than expected: {part}; bytecodes: {raw}")]
@@ -95,6 +96,7 @@ pub enum CompareError {
     InvalidConstructorArguments(DisplayBytes),
 }
 
+#[allow(clippy::result_large_err)]
 pub fn compare(remote_bytecode: &Bytes, local: &LocalBytecode) -> Result<MatchType, CompareError> {
     let local_bytecode = &local.raw_bytecode();
 
@@ -129,6 +131,7 @@ pub fn compare(remote_bytecode: &Bytes, local: &LocalBytecode) -> Result<MatchTy
     Ok(MatchType::Partial)
 }
 
+#[allow(clippy::result_large_err)]
 pub fn extract_constructor_args(
     remote_raw: &Bytes,
     local_raw: &Bytes,
@@ -163,6 +166,7 @@ pub fn extract_constructor_args(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn compare_bytecode_parts(
     remote_raw: &Bytes,
     local_raw: &Bytes,
@@ -235,6 +239,7 @@ fn compare_bytecode_parts(
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_constructor_args(
     encoded_args: Bytes,
     abi_constructor: &Constructor,
@@ -353,7 +358,8 @@ mod tests {
     #[test]
     fn compare_diff_meta() {
         let bytecodes = vec![DEFAULT_MAIN, DEFAULT_META];
-        let remote = format!("{}{}", 
+        let remote = format!(
+            "{}{}",
             DEFAULT_MAIN,
             "a2646970667358221220940dbafd63b6b52884aa9499b7b61e99e33685af80e603ffe485e9efe2ac2f7764736f6c63430008070033"
         );
@@ -383,7 +389,8 @@ mod tests {
     #[test]
     fn compare_diff_meta_double_meta() {
         let bytecodes = vec![DEFAULT_MAIN, DEFAULT_META, DEFAULT_MAIN, DEFAULT_META];
-        let remote = format!("{}{}{}{}", 
+        let remote = format!(
+            "{}{}{}{}",
             DEFAULT_MAIN,
             "a2646970667358221220940dbafd63b6b52884aa9499b7b61e99e33685af80e603ffe485e9efe2ac2f7764736f6c63430008070033",
             DEFAULT_MAIN,
@@ -404,7 +411,8 @@ mod tests {
             ),
         ] {
             let bytecodes = vec![DEFAULT_MAIN, DEFAULT_META, DEFAULT_MAIN, DEFAULT_META];
-            let remote = format!("{}{}{}{}", 
+            let remote = format!(
+                "{}{}{}{}",
                 random_string1,
                 "a2646970667358221220c424331e61ba143d01f757e1a3b6ddcfe99698f6c1862e2133c4d7d277854b9564736f6c63430008070033",
                 random_string2,

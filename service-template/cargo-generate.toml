@@ -18,19 +18,13 @@ default = true
 [conditional.'!entity']
 ignore = ["{{project-name}}-entity"]
 
-[conditional.'logic'.placeholders.migrations]
-type = "bool"
-prompt = "Include migration crate inside logic crate?"
-default = true
-
-[conditional.'!migrations']
-ignore = ["{{project-name}}-migration"]
-
-
 [placeholders.database]
 type = "bool"
 prompt = "Does server need to connect to postgres database?"
 default = true
+
+[conditional.'!database']
+ignore = ["{{project-name}}-migration"]
 
 [placeholders.cicd]
 type = "bool"
@@ -45,10 +39,13 @@ type = "bool"
 prompt = "Generate example service, endpoints and messages in proto definition?"
 default = true
 
-# [conditional.'proto_ex'.placeholders.proto_ex_name]
-# type = "string"
-# prompt = "Write example service name to generating proto examples"
-# default = "TestService"
+[conditional.'proto_ex'.placeholders.proto_ex_name]
+type = "string"
+prompt = "Write example service name to generating proto examples"
+default = "TestService"
+
+[conditional.'!proto_ex']
+ignore = ["{{project-name}}-server/services/{{proto_ex_name}}.rs"]
 
 [placeholders.types]
 type = "bool"

@@ -26,7 +26,6 @@ stop-test-postgres:
     just docker-name="{{docker-name}}-test" stop-postgres
 
 run:
-    MULTICHAIN_AGGREGATOR__DATABASE__CONNECT__URL={{DATABASE_URL}} \
     cargo run --bin multichain-aggregator-server
 
 generate-entities:

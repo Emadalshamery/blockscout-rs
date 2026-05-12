@@ -1,27 +1,45 @@
 use chrono::{NaiveDate, Utc};
 use cron::Schedule;
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::{StreamExt, stream::FuturesUnordered};
 use itertools::Itertools;
 use sea_orm::{DatabaseConnection, DbErr};
 use stats_proto::blockscout::stats::v1 as proto_v1;
 use thiserror::Error;
-use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 
 use crate::{
+    InitialUpdateTracker,
     blockscout_waiter::IndexingStatusListener,
     runtime_setup::{RuntimeSetup, UpdateGroupEntry},
-    InitialUpdateTracker,
+    settings::Mode,
 };
 use stats::{
-    data_source::types::{BlockscoutMigrations, UpdateParameters},
     ChartKey,
+    data_source::types::{IndexerMigrations, UpdateParameters},
 };
 
 use std::{collections::HashSet, sync::Arc};
 
+/// Parameters for constructing [`UpdateService`].
+/// Used to avoid passing too many arguments to [`UpdateService::new`].
+pub struct UpdateServiceConfig {
+    pub db: Arc<DatabaseConnection>,
+    pub indexer_db: Arc<DatabaseConnection>,
+    pub second_indexer_db: Option<Arc<DatabaseConnection>>,
+    pub charts: Arc<RuntimeSetup>,
+    pub status_listener: Option<IndexingStatusListener>,
+    pub mode: Mode,
+    pub multichain_filter: Option<Vec<u64>>,
+    pub interchain_primary_id: Option<u64>,
+}
+
 pub struct UpdateService {
     db: Arc<DatabaseConnection>,
-    blockscout_db: Arc<DatabaseConnection>,
+    indexer_db: Arc<DatabaseConnection>,
+    second_indexer_db: Option<Arc<DatabaseConnection>>,
+    mode: Mode,
+    multichain_filter: Option<Vec<u64>>,
+    interchain_primary_id: Option<u64>,
     charts: Arc<RuntimeSetup>,
     status_listener: Option<IndexingStatusListener>,
     init_update_tracker: InitialUpdateTracker,
@@ -50,19 +68,18 @@ fn group_update_schedule<'a>(
 }
 
 impl UpdateService {
-    pub async fn new(
-        db: Arc<DatabaseConnection>,
-        blockscout_db: Arc<DatabaseConnection>,
-        charts: Arc<RuntimeSetup>,
-        status_listener: Option<IndexingStatusListener>,
-    ) -> Result<Self, DbErr> {
+    pub async fn new(config: UpdateServiceConfig) -> Result<Self, DbErr> {
         let on_demand = mpsc::channel(128);
-        let init_update_tracker = Self::initialize_update_tracker(&charts);
+        let init_update_tracker = Self::initialize_update_tracker(&config.charts);
         Ok(Self {
-            db,
-            blockscout_db,
-            charts,
-            status_listener,
+            db: config.db,
+            indexer_db: config.indexer_db,
+            second_indexer_db: config.second_indexer_db,
+            mode: config.mode,
+            multichain_filter: config.multichain_filter,
+            interchain_primary_id: config.interchain_primary_id,
+            charts: config.charts,
+            status_listener: config.status_listener,
             init_update_tracker,
             on_demand_sender: Mutex::new(on_demand.0),
             on_demand_receiver: Mutex::new(on_demand.1),
@@ -157,6 +174,10 @@ impl UpdateService {
         init_update_tracker: &InitialUpdateTracker,
     ) {
         {
+            // to not produce unnecessary logs
+            if group_entry.should_skip_update() {
+                return;
+            }
             init_update_tracker
                 .mark_queued_for_initial_update(&group_entry.enabled_members)
                 .await;
@@ -222,7 +243,9 @@ impl UpdateService {
                     )
                     .await;
                 if updated.is_empty() {
-                    tracing::warn!("on-demand update list was incorrectly filtered and prepared. this is likely a bug");
+                    tracing::warn!(
+                        "on-demand update list was incorrectly filtered and prepared. this is likely a bug"
+                    );
                     break;
                 }
                 let mut any_removed = false;
@@ -233,7 +256,9 @@ impl UpdateService {
                 if !any_removed {
                     // should always have something to remove but placed it just in case
                     // to prevent infinite loop
-                    tracing::warn!("on-demand updated list does not intersect with enabled charts list. this is likely a bug");
+                    tracing::warn!(
+                        "on-demand updated list does not intersect with enabled charts list. this is likely a bug"
+                    );
                 }
 
                 tracing::info!(
@@ -382,13 +407,17 @@ impl UpdateService {
         force_full: bool,
         enabled_charts_overwrite: Option<&HashSet<ChartKey>>,
     ) {
+        let enabled_charts = enabled_charts_overwrite.unwrap_or(&group_entry.enabled_members);
+        if group_entry.should_skip_update() {
+            return;
+        }
         tracing::info!(
             // instrumentation is inside `update_charts_with_mutexes`
             update_group = group_entry.group.name(),
             force_update = force_full,
             "updating group of charts"
         );
-        let Ok(active_migrations) = BlockscoutMigrations::query_from_db(&self.blockscout_db)
+        let Ok(active_migrations) = IndexerMigrations::query_from_db(self.mode, &self.indexer_db)
             .await
             .inspect_err(|err| {
                 tracing::error!("error during blockscout migrations detection: {:?}", err)
@@ -396,11 +425,15 @@ impl UpdateService {
         else {
             return;
         };
-        let enabled_charts = enabled_charts_overwrite.unwrap_or(&group_entry.enabled_members);
+
         let update_parameters = UpdateParameters {
-            db: &self.db,
-            blockscout: &self.blockscout_db,
-            blockscout_applied_migrations: active_migrations,
+            stats_db: &self.db,
+            mode: self.mode,
+            multichain_filter: self.multichain_filter.clone(),
+            interchain_primary_id: self.interchain_primary_id,
+            indexer_db: &self.indexer_db,
+            second_indexer_db: self.second_indexer_db.as_deref(),
+            indexer_applied_migrations: active_migrations,
             enabled_update_charts_recursive: group_entry
                 .group
                 .enabled_members_with_deps(enabled_charts),
@@ -425,12 +458,17 @@ impl UpdateService {
         }
     }
 
+    /// `update_all=true` will ignore `chart_names` and update all enabled charts
     pub async fn handle_update_request(
         self: &Arc<Self>,
-        chart_names: Vec<String>,
+        mut chart_names: Vec<String>,
+        update_all: bool,
         from: Option<NaiveDate>,
         update_later: bool,
     ) -> Result<OnDemandReupdateAccepted, OnDemandReupdateError> {
+        if update_all {
+            chart_names = self.charts.charts_info.keys().cloned().collect();
+        }
         let (accepted_keys, accepted_names, rejections) =
             self.split_update_request_input(chart_names);
         if accepted_keys.is_empty() {
@@ -457,26 +495,18 @@ impl UpdateService {
     }
 
     pub async fn get_initial_update_status(&self) -> proto_v1::UpdateStatus {
+        let tracker = &self.init_update_tracker;
         proto_v1::UpdateStatus {
-            all_status: self.init_update_tracker.get_all_status().await.into(),
-            independent_status: self
-                .init_update_tracker
-                .get_independent_status()
-                .await
-                .into(),
-            blocks_dependent_status: self
-                .init_update_tracker
-                .get_blocks_dependent_status()
-                .await
-                .into(),
-            internal_transactions_dependent_status: self
-                .init_update_tracker
+            all_status: tracker.get_all_status().await.into(),
+            independent_status: tracker.get_independent_status().await.into(),
+            blocks_dependent_status: tracker.get_blocks_dependent_status().await.into(),
+            internal_transactions_dependent_status: tracker
                 .get_internal_transactions_dependent_status()
                 .await
                 .into(),
-            user_ops_dependent_status: self
-                .init_update_tracker
-                .get_user_ops_dependent_status()
+            user_ops_dependent_status: tracker.get_user_ops_dependent_status().await.into(),
+            zetachain_cctx_dependent_status: tracker
+                .get_zetachain_cctx_dependent_status()
                 .await
                 .into(),
         }
