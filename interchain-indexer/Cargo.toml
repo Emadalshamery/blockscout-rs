@@ -50,7 +50,7 @@ prost-types = { version = "0.14" }
 prost-wkt = { version = "0.7.0" }
 prost-wkt-build = { version = "0.7.0" }
 prost-wkt-types = { version = "0.7.0" }
-rand = { version = "0.9" }
+rand = { version = "0.10" }
 reqwest = { version = "0.12.5", features = ["json"] }
 reqwest-middleware = { version = "0.3.3" }
 reqwest-retry = { version = "0.6.1" }
