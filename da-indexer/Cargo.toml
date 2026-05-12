@@ -23,7 +23,7 @@ anyhow = { version = "1.0" }
 async-std = { version = "1" }
 async-trait = { version = "0.1" }
 aws-credential-types = { version = "1.2.3", features = ["hardcoded-credentials"] }
-aws-sdk-s3 = { version = "1.94.0", features = ["behavior-version-latest"] }
+aws-sdk-s3 = { version = "1.112.0", features = ["behavior-version-latest"] }
 base64 = { version = "0.22.0" }
 blockscout-display-bytes = { version = "1.0" }
 blockscout-endpoint-swagger = { git = "https://github.com/blockscout/blockscout-rs", rev = "4a755c5" }
